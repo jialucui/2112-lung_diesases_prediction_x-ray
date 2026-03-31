@@ -1,3 +1,17 @@
-from .medical_models import create_model, MultiTaskPneumoniaModel, SingleTaskPneumoniaModel
+"""
+Medical models initialization
+"""
 
-__all__ = ['create_model', 'MultiTaskPneumoniaModel', 'SingleTaskPneumoniaModel']
+from .medical_models import (
+    create_model, 
+    DenseNetMultiTask, 
+    BinaryClassifier, 
+    count_parameters
+)
+
+__all__ = [
+    'create_model',
+    'DenseNetMultiTask',
+    'BinaryClassifier',
+    'count_parameters'
+]
