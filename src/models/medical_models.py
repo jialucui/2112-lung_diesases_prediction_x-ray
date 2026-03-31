@@ -1,36 +1,102 @@
-class MultiTaskPneumoniaModel:
-    def __init__(self, num_classes, model_type='resnet50'): 
-        self.model_type = model_type
-        self.num_classes = num_classes
-        self.model = self.create_model()
+"""
+Medical models for pneumonia detection
+Supports: ResNet50, DenseNet121, EfficientNet-B0
+"""
 
-    def create_model(self):
-        if self.model_type == 'resnet50':
-            return self.create_resnet50()
-        elif self.model_type == 'densenet121':
-            return self.create_densenet121()
-        elif self.model_type == 'efficientnet-b0':
-            return self.create_efficientnet_b0()
+import torch
+import torch.nn as nn
+import torchvision.models as models
+from typing import Tuple
+
+
+def create_model(model_type: str, backbone: str, pretrained: bool = True, device: str = 'cuda'):
+    """
+    Create pneumonia detection model
+    
+    Args:
+        model_type: 'multi_task' or 'binary'
+        backbone: 'resnet50', 'densenet121', 'efficientnet-b0'
+        pretrained: Whether to use pretrained weights
+        device: 'cuda' or 'cpu'
+    
+    Returns:
+        Model instance
+    """
+    if model_type == 'multi_task':
+        model = DenseNetMultiTask(num_classes=2, severity_classes=3, pretrained=pretrained)
+    elif model_type == 'binary':
+        model = BinaryClassifier(backbone=backbone, pretrained=pretrained)
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
+    
+    return model.to(device)
+
+
+class DenseNetMultiTask(nn.Module):
+    """Multi-task DenseNet for pneumonia detection and severity prediction"""
+    
+    def __init__(self, num_classes: int = 2, severity_classes: int = 3, pretrained: bool = True):
+        super().__init__()
+        
+        # Load pretrained DenseNet121
+        self.backbone = models.densenet121(pretrained=pretrained)
+        
+        # Remove classification head
+        num_features = self.backbone.classifier.in_features
+        self.backbone.classifier = nn.Identity()
+        
+        # Binary classification head
+        self.binary_head = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
+        )
+        
+        # Severity prediction head
+        self.severity_head = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(256, severity_classes)
+        )
+    
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass
+        
+        Returns:
+            binary_logits: (batch_size, 2)
+            severity_logits: (batch_size, severity_classes)
+        """
+        features = self.backbone(x)
+        binary_logits = self.binary_head(features)
+        severity_logits = self.severity_head(features)
+        return binary_logits, severity_logits
+
+
+class BinaryClassifier(nn.Module):
+    """Binary classifier for pneumonia detection"""
+    
+    def __init__(self, backbone: str = 'resnet50', pretrained: bool = True):
+        super().__init__()
+        
+        if backbone == 'resnet50':
+            self.model = models.resnet50(pretrained=pretrained)
+            num_features = self.model.fc.in_features
+            self.model.fc = nn.Linear(num_features, 2)
+        
+        elif backbone == 'densenet121':
+            self.model = models.densenet121(pretrained=pretrained)
+            num_features = self.model.classifier.in_features
+            self.model.classifier = nn.Linear(num_features, 2)
+        
         else:
-            raise ValueError('Invalid model type')
-
-    def create_resnet50(self):
-        # Code to create ResNet50 model
-        pass
-
-    def create_densenet121(self):
-        # Code to create DenseNet121 model
-        pass
-
-    def create_efficientnet_b0(self):
-        # Code to create EfficientNet-B0 model
-        pass
-
-class SingleTaskPneumoniaModel(MultiTaskPneumoniaModel):
-    def __init__(self, model_type='resnet50'):
-        super().__init__(num_classes=1, model_type=model_type)
+            raise ValueError(f"Unknown backbone: {backbone}")
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
 
 
-def count_parameters(model):
+def count_parameters(model: nn.Module) -> int:
+    """Count trainable parameters"""
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
