@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.models.medical_models import create_model
+from src.models.medical_models import create_model, DenseNetMultiTask
 from src.preprocessing.dicom_xray_loader import create_data_loaders
 from src.evaluation.metrics import MetricsCalculator
 
