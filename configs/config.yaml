@@ -1,18 +1,46 @@
-model_type: binary
+# Model Configuration
+model:
+  model_type: multi_task
+  name: densenet121
+  num_classes: 3
+  severity_classes: 5
+  pretrained: true
 
-paths:
-  training_data: /data/training/
-  validation_data: /data/validation/
-  test_data: /data/test/
+data:
+  data_dir: pneumonia/
+  csv_file: null
+  image_size: 224
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  augment_train: true
+  num_workers: 4
+  seed: 42
 
-training_parameters:
+training:
   batch_size: 32
   learning_rate: 0.001
-  epochs: 50
-  early_stopping:
-    enabled: true
-    patience: 5
+  weight_decay: 1e-5
+  num_epochs: 50
+  early_stopping_patience: 10
+  gradient_clip_max_norm: 1.0
+  mixed_precision: true
+  loss_weights:
+    classification: 0.6
+    binary_classification: 0.6
+    severity_prediction: 0.4
 
-inference_settings:
-  save_model: true
-  model_path: /models/pneumonia_detection_model.h5
+evaluation:
+  eval_freq: 5
+
+paths:
+  checkpoint_dir: checkpoints/
+  log_dir: logs/
+  output_dir: outputs/
+
+inference:
+  class_display_names:
+    - Normal
+    - Virus Pneumonia
+    - Bacteria Pneumonia
+  severity_bin_centers: [10, 30, 50, 70, 90]
