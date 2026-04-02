@@ -6,8 +6,7 @@ Part 1: Import and Feasibility Test
 import sys
 import os
 import torch
-import numpy as np
-from pathlib import Path
+import yaml
 
 # 添加项目路径
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -46,10 +45,9 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {device}")
 
 try:
-    # 创建 DenseNetMultiTask 模型
     model_multi = DenseNetMultiTask(
-        num_classes=2, 
-        severity_classes=3, 
+        num_classes=3,
+        severity_classes=5,
         pretrained=True
     ).to(device)
     params = count_parameters(model_multi)
@@ -59,10 +57,10 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    # 创建 BinaryClassifier 模型
     model_binary = BinaryClassifier(
-        backbone='densenet121', 
-        pretrained=True
+        backbone='densenet121',
+        pretrained=True,
+        num_classes=3,
     ).to(device)
     params = count_parameters(model_binary)
     print(f"✅ BinaryClassifier initialized ({params:,} parameters)")
@@ -71,12 +69,13 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    # 使用 create_model 函数
     model = create_model(
         model_type='multi_task',
         backbone='densenet121',
         pretrained=True,
-        device=device
+        device=device,
+        num_classes=3,
+        severity_classes=5,
     )
     print("✅ Model created via create_model() function")
 except Exception as e:
@@ -89,11 +88,11 @@ try:
     dummy_input = torch.randn(2, 3, 224, 224).to(device)
     with torch.no_grad():
         outputs = model(dummy_input)
-    
+
     if isinstance(outputs, tuple):
-        binary_logits, severity_logits = outputs
-        print(f"✅ Forward pass successful!")
-        print(f"   Binary logits shape: {binary_logits.shape}")
+        class_logits, severity_logits = outputs
+        print("✅ Forward pass successful!")
+        print(f"   Class logits shape: {class_logits.shape}")
         print(f"   Severity logits shape: {severity_logits.shape}")
     else:
         print(f"❌ Unexpected output type: {type(outputs)}")
@@ -101,44 +100,36 @@ except Exception as e:
     print(f"❌ Forward pass failed: {e}")
     sys.exit(1)
 
-# 测试 4: PneumoniaPredictor 初始化
+# 测试 4: PneumoniaPredictor 初始化（与 configs/config.yaml 一致）
 print("\n[Test 4] Initializing PneumoniaPredictor...")
 try:
+    cfg_path = os.path.join(project_root, "configs", "config.yaml")
+    with open(cfg_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
     predictor = PneumoniaPredictor(
-        model=model,
-        device=device
+        config,
+        model,
+        device,
+        checkpoint_path=None,
     )
     print("✅ PneumoniaPredictor initialized successfully")
     print(f"   Device: {predictor.device}")
-    print(f"   Class names: {predictor.CLASS_NAMES}")
-    print(f"   Severity names: {predictor.SEVERITY_NAMES}")
+    print(f"   Class names: {predictor.class_names}")
 except Exception as e:
     print(f"❌ Failed to initialize PneumoniaPredictor: {e}")
     sys.exit(1)
 
-# 测试 5: 检查数据文件
-print("\n[Test 5] Checking test data directory...")
-data_dir = r'C:\Users\tianz\Downloads\2112-lung-test-data1 - Copy'
-if os.path.exists(data_dir):
+# 测试 5: 检查数据目录（可选）
+print("\n[Test 5] Checking local data directory...")
+data_dir = os.path.join(project_root, "pneumonia_test_folder_1")
+if os.path.isdir(data_dir):
     print(f"✅ Data directory found: {data_dir}")
-    
-    # 列出数据文件
-    image_files = [f for f in os.listdir(data_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.dcm'))]
-    print(f"   Found {len(image_files)} image files")
-    
-    if image_files:
-        print(f"   Sample files: {image_files[:3]}")
-    else:
-        print(f"   ⚠️  No image files found in directory")
 else:
-    print(f"⚠️  Data directory not found (will be needed for Part 2): {data_dir}")
+    print(f"⚠️  Optional data directory not found: {data_dir}")
 
 print("\n" + "=" * 60)
 print("✅ PART 1 COMPLETED: All imports and basic tests passed!")
 print("=" * 60)
-
-# 保存信息供 Part 2 使用
-print("\n[Info] Model ready for inference testing")
+print("\n[Info] Run inference: python detect.py your_image.jpg")
 print(f"Device: {device}")
-print(f"Model type: DenseNetMultiTask")
 print(f"Total parameters: {count_parameters(model):,}")

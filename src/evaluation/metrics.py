@@ -73,8 +73,10 @@ class MetricsCalculator:
         print(f"Precision:    {metrics['precision']:.4f}")
         print(f"Recall:       {metrics['recall']:.4f}")
         print(f"F1-Score:     {metrics['f1']:.4f}")
-        print(f"Specificity:  {metrics['specificity']:.4f}")
-        print(f"Sensitivity:  {metrics['sensitivity']:.4f}")
+        if "specificity" in metrics:
+            print(f"Specificity:  {metrics['specificity']:.4f}")
+        if "sensitivity" in metrics:
+            print(f"Sensitivity:  {metrics['sensitivity']:.4f}")
         if 'auc_roc' in metrics:
             print(f"AUC-ROC:      {metrics['auc_roc']:.4f}")
         print("="*50 + "\n")

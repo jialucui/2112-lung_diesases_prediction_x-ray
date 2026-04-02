@@ -234,7 +234,9 @@ def create_data_loaders(
     test_split: float = 0.15,
     num_workers: int = 4,
     augment_train: bool = True,
-    seed: int = 42
+    seed: int = 42,
+    severity_strategy: str = "none",
+    synthetic_severity_by_class: Optional[List[int]] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create train, validation, and test DataLoaders
@@ -303,6 +305,28 @@ def create_data_loaders(
                     tmp_labels.append(class_to_idx[class_dir.name])
 
         labels = np.array(tmp_labels, dtype=np.int64)
+
+        if csv_file is None or not os.path.exists(str(csv_file)):
+            if severity_strategy == "synthetic":
+                if not synthetic_severity_by_class:
+                    raise ValueError(
+                        "severity_strategy='synthetic' requires synthetic_severity_by_class "
+                        "(one severity class id per label index)."
+                    )
+                n_cls = int(labels.max()) + 1 if len(labels) else 0
+                if len(synthetic_severity_by_class) < n_cls:
+                    raise ValueError(
+                        f"synthetic_severity_by_class length {len(synthetic_severity_by_class)} "
+                        f"< num classes {n_cls}"
+                    )
+                severity_labels = np.array(
+                    [synthetic_severity_by_class[int(lab)] for lab in labels],
+                    dtype=np.int64,
+                )
+                logger.info(
+                    "Using synthetic severity labels from synthetic_severity_by_class "
+                    f"(strategy={severity_strategy})."
+                )
     
     # Filter valid paths
     valid_indices = [i for i, p in enumerate(image_paths) if os.path.exists(p)]

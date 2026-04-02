@@ -104,8 +104,9 @@ class PneumoniaTrainer:
         binary_loss = nn.CrossEntropyLoss()(binary_logits, binary_labels)
         severity_loss = nn.CrossEntropyLoss()(severity_logits, severity_labels)
 
-        binary_weight = self.config['training']['loss_weights']['binary_classification']
-        severity_weight = self.config['training']['loss_weights']['severity_prediction']
+        lw = self.config['training']['loss_weights']
+        binary_weight = lw.get('classification', lw.get('binary_classification', 0.6))
+        severity_weight = lw['severity_prediction']
 
         total_loss = binary_weight * binary_loss + severity_weight * severity_loss
         return total_loss, {
@@ -172,7 +173,10 @@ class PneumoniaTrainer:
 
                 probs = torch.softmax(logits, dim=1).cpu().numpy()
                 preds = probs.argmax(axis=1)
-                pos_probs = probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
+                if probs.shape[1] == 2:
+                    pos_probs = probs[:, 1]
+                else:
+                    pos_probs = probs[np.arange(len(preds)), preds]
 
                 all_preds.extend(preds.tolist())
                 all_targets.extend(labels.tolist())
@@ -209,8 +213,10 @@ class PneumoniaTrainer:
 
                 probs = torch.softmax(logits, dim=1).cpu().numpy()
                 preds = probs.argmax(axis=1)
-                # For binary AUC; harmless placeholder for multiclass
-                pos_probs = probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
+                if probs.shape[1] == 2:
+                    pos_probs = probs[:, 1]
+                else:
+                    pos_probs = probs[np.arange(len(preds)), preds]
 
                 all_preds.extend(preds.tolist())
                 all_targets.extend(labels.tolist())
@@ -278,17 +284,20 @@ def main():
     
     trainer = PneumoniaTrainer(args.config, device=args.device)
     
+    dcfg = trainer.config['data']
     train_loader, val_loader, test_loader = create_data_loaders(
-        data_dir=trainer.config['data']['data_dir'],
-        csv_file=trainer.config['data'].get('csv_file'),
+        data_dir=dcfg['data_dir'],
+        csv_file=dcfg.get('csv_file'),
         batch_size=trainer.config['training']['batch_size'],
-        image_size=trainer.config['data'].get('image_size', 224),
-        train_split=trainer.config['data'].get('train_split', 0.7),
-        val_split=trainer.config['data'].get('val_split', 0.15),
-        test_split=trainer.config['data'].get('test_split', 0.15),
-        num_workers=trainer.config['data']['num_workers'],
-        augment_train=trainer.config['data']['augment_train'],
-        seed=trainer.config['data']['seed']
+        image_size=dcfg.get('image_size', 224),
+        train_split=dcfg.get('train_split', 0.7),
+        val_split=dcfg.get('val_split', 0.15),
+        test_split=dcfg.get('test_split', 0.15),
+        num_workers=dcfg['num_workers'],
+        augment_train=dcfg['augment_train'],
+        seed=dcfg['seed'],
+        severity_strategy=dcfg.get('severity_strategy', 'none'),
+        synthetic_severity_by_class=dcfg.get('synthetic_severity_by_class'),
     )
     
     trainer.train(train_loader, val_loader)

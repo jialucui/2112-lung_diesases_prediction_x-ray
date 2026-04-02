@@ -11,12 +11,14 @@
 #     Train_viruspneumonia_2112/
 #     Train_bacteriapneumonia_2112/
 
-# Model Configuration
+# Model: 3-class (normal / viral / bacterial) + severity bins (shown as % at inference)
 model:
   name: 'densenet121'
   pretrained: true
-  model_type: 'binary'   # single-head classification (supports 2+ classes)
-  num_classes: 3         # Normal / Virus / Bacteria
+  model_type: 'multi_task'
+  num_classes: 3
+  # 严重程度分档数量；推理时映射为百分比（见 inference.severity_bin_centers）
+  severity_classes: 5
 
 # Training Configuration
 training:
@@ -28,15 +30,18 @@ training:
   weight_decay: 0.0001
   gradient_clip_max_norm: 1.0
 
-  # Multi-task learning weights (used only when model_type: multi_task)
   loss_weights:
-    binary_classification: 0.6
+    classification: 0.6
     severity_prediction: 0.4
 
 # Data Configuration
 data:
-  data_dir: 'pneumonia_test_folder_1'  # 子文件夹名为类别；与训练时一致以便推理对齐
-  csv_file: null            # set to a CSV path if you have one; otherwise folder scan is used
+  data_dir: 'pneumonia_test_folder_1'
+  csv_file: null
+  # 无 CSV 时：synthetic 按类别索引给默认严重程度标签（弱监督，有真实标签后请用 csv）
+  severity_strategy: 'synthetic'
+  # 长度须等于 num_classes：第 i 类对应 severity 类别索引 0..severity_classes-1
+  synthetic_severity_by_class: [2, 0, 2]
   image_size: 224
   train_split: 0.8
   val_split: 0.1
@@ -44,6 +49,11 @@ data:
   num_workers: 4
   augment_train: true
   seed: 42
+
+# 与 data_dir 子文件夹按字母排序一致：Train_bacteria→0, Train_normal→1, Train_virus→2
+inference:
+  class_display_names: ['细菌性肺炎', '正常', '病毒性肺炎']
+  severity_bin_centers: [10, 30, 50, 70, 90]
 
 # Directory Paths
 paths:
