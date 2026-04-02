@@ -1,12 +1,56 @@
+# Default training config for folder-based datasets.
+# Expected dataset layout:
+#   <data_dir>/
+#     <class_0_name>/
+#       img1.jpg ...
+#     <class_1_name>/
+#       img2.jpg ...
+#
+# Example for your case:
+#   pneumonia/
+#     Train_viruspneumonia_2112/
+#     Train_bacteriapneumonia_2112/
+
+# Model Configuration
 model:
-  type: DenseNet121
-  training_parameters:
-    batch_size: 32
-    learning_rate: 0.001
-    num_epochs: 50
-    early_stopping_patience: 10
+  name: 'densenet121'
+  pretrained: true
+  model_type: 'binary'   # single-head classification (supports 2+ classes)
+  num_classes: 3         # Normal / Virus / Bacteria
+
+# Training Configuration
+training:
+  batch_size: 16
+  learning_rate: 0.0005
+  num_epochs: 20
+  early_stopping_patience: 5
+  mixed_precision: true
+  weight_decay: 0.0001
+  gradient_clip_max_norm: 1.0
+
+  # Multi-task learning weights (used only when model_type: multi_task)
+  loss_weights:
+    binary_classification: 0.6
+    severity_prediction: 0.4
+
+# Data Configuration
 data:
-  paths:
-    training_data: /path/to/training/data
-    validation_data: /path/to/validation/data
-    test_data: /path/to/test/data
+  data_dir: 'pneumonia_test_folder_1'  # 子文件夹名为类别；与训练时一致以便推理对齐
+  csv_file: null            # set to a CSV path if you have one; otherwise folder scan is used
+  image_size: 224
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  num_workers: 4
+  augment_train: true
+  seed: 42
+
+# Directory Paths
+paths:
+  checkpoint_dir: 'checkpoints/'
+  log_dir: 'logs/'
+  output_dir: 'outputs/'
+
+# Evaluation Configuration
+evaluation:
+  eval_freq: 1

@@ -44,6 +44,7 @@ class PneumoniaTrainer:
         self.device = device
         self.best_val_f1 = 0.0
         self.patience_counter = 0
+        self.model_type = self.config['model'].get('model_type', 'multi_task')
         
         # Create directories
         self.checkpoint_dir = Path(self.config['paths']['checkpoint_dir'])
@@ -56,7 +57,9 @@ class PneumoniaTrainer:
             model_type=self.config['model']['model_type'],
             backbone=self.config['model']['name'],
             pretrained=self.config['model']['pretrained'],
-            device=device
+            device=device,
+            num_classes=self.config['model'].get('num_classes'),
+            severity_classes=self.config['model'].get('severity_classes'),
         )
         
         # Create optimizer
@@ -72,28 +75,44 @@ class PneumoniaTrainer:
             T_max=self.config['training']['num_epochs']
         )
         
-        # Gradient scaler
-        self.scaler = GradScaler()
+        # Gradient scaler (enabled only when mixed precision is requested and CUDA is available)
+        mp_requested = bool(self.config['training'].get('mixed_precision', True))
+        self.use_mixed_precision = mp_requested and torch.cuda.is_available() and device.startswith('cuda')
+        self.scaler = GradScaler(enabled=self.use_mixed_precision)
         
-        # Metrics calculator
-        self.metrics = MetricsCalculator()
+        # Metrics calculator (binary or multiclass)
+        self.metrics = MetricsCalculator(task='classification')
         
         logger.info(f"Trainer initialized on {device}")
     
-    def _compute_loss(self, binary_logits, severity_logits, batch):
-        """Compute multi-task loss"""
-        binary_labels = batch['label'].to(self.device)
+    def _compute_loss(self, outputs, batch):
+        """Compute loss for binary or multi-task model."""
+        labels = batch['label'].to(self.device)
+
+        if self.model_type == 'binary':
+            logits = outputs
+            loss = nn.CrossEntropyLoss()(logits, labels)
+            return loss, {'loss': loss.detach()}
+
+        # multi_task
+        binary_logits, severity_logits = outputs
+        binary_labels = labels
+        if 'severity' not in batch:
+            raise ValueError("Multi-task training requires 'severity' labels in the dataset/batch.")
         severity_labels = batch['severity'].to(self.device)
-        
+
         binary_loss = nn.CrossEntropyLoss()(binary_logits, binary_labels)
         severity_loss = nn.CrossEntropyLoss()(severity_logits, severity_labels)
-        
+
         binary_weight = self.config['training']['loss_weights']['binary_classification']
         severity_weight = self.config['training']['loss_weights']['severity_prediction']
-        
+
         total_loss = binary_weight * binary_loss + severity_weight * severity_loss
-        
-        return total_loss, binary_loss, severity_loss
+        return total_loss, {
+            'loss': total_loss.detach(),
+            'binary_loss': binary_loss.detach(),
+            'severity_loss': severity_loss.detach(),
+        }
     
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict:
         """Train for one epoch"""
@@ -104,14 +123,15 @@ class PneumoniaTrainer:
         
         for batch in progress_bar:
             images = batch['image'].to(self.device)
-            
-            with autocast():
-                binary_logits, severity_logits = self.model(images)
-                loss, _, _ = self._compute_loss(binary_logits, severity_logits, batch)
+
+            with autocast(device_type='cuda' if self.device.startswith('cuda') else 'cpu', enabled=self.use_mixed_precision):
+                outputs = self.model(images)
+                loss, _ = self._compute_loss(outputs, batch)
             
             self.optimizer.zero_grad()
             self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
+            if self.use_mixed_precision:
+                self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
                 self.config['training']['gradient_clip_max_norm']
@@ -120,7 +140,7 @@ class PneumoniaTrainer:
             self.scaler.update()
             
             total_loss += loss.item()
-            progress_bar.set_postfix({'loss': total_loss / (progress_bar.n + 1):.4f})
+            progress_bar.set_postfix({'loss': f"{total_loss / (progress_bar.n + 1):.4f}"})
         
         return {'loss': total_loss / len(train_loader)}
     
@@ -129,37 +149,76 @@ class PneumoniaTrainer:
         self.model.eval()
         
         total_loss = 0.0
-        all_binary_preds = []
-        all_binary_targets = []
-        all_severity_preds = []
-        all_severity_targets = []
+        all_preds = []
+        all_targets = []
+        all_pos_probs = []
         
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validation"):
                 images = batch['image'].to(self.device)
-                
-                with autocast():
-                    binary_logits, severity_logits = self.model(images)
-                    loss, _, _ = self._compute_loss(binary_logits, severity_logits, batch)
+
+                with autocast(device_type='cuda' if self.device.startswith('cuda') else 'cpu', enabled=self.use_mixed_precision):
+                    outputs = self.model(images)
+                    loss, _ = self._compute_loss(outputs, batch)
                 
                 total_loss += loss.item()
-                
-                binary_preds = binary_logits.argmax(dim=1).cpu()
-                severity_preds = severity_logits.argmax(dim=1).cpu()
-                
-                all_binary_preds.extend(binary_preds.numpy())
-                all_binary_targets.extend(batch['label'].numpy())
-                all_severity_preds.extend(severity_preds.numpy())
-                all_severity_targets.extend(batch['severity'].numpy())
-        
-        metrics = self.metrics.calculate_metrics(
-            all_binary_preds,
-            all_binary_targets,
-            all_severity_preds,
-            all_severity_targets
-        )
+
+                labels = batch['label'].cpu().numpy()
+
+                if self.model_type == 'binary':
+                    logits = outputs
+                else:
+                    logits, _ = outputs  # use binary head for reporting
+
+                probs = torch.softmax(logits, dim=1).cpu().numpy()
+                preds = probs.argmax(axis=1)
+                pos_probs = probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
+
+                all_preds.extend(preds.tolist())
+                all_targets.extend(labels.tolist())
+                all_pos_probs.extend(pos_probs.tolist())
+
+        self.metrics.reset()
+        self.metrics.add_batch(all_preds, all_pos_probs, all_targets)
+        metrics = self.metrics.calculate_metrics()
         metrics['loss'] = total_loss / len(val_loader)
-        
+
+        # keep compatibility with old logging key name used elsewhere
+        metrics['binary_f1'] = metrics.get('f1', 0.0)
+        return metrics
+
+    def evaluate(self, loader: DataLoader, name: str = "test") -> Dict:
+        """Evaluate a loader and return metrics dict."""
+        self.model.eval()
+        all_preds = []
+        all_targets = []
+        all_pos_probs = []
+
+        with torch.no_grad():
+            for batch in tqdm(loader, desc=f"Evaluating ({name})"):
+                images = batch['image'].to(self.device)
+                labels = batch['label'].cpu().numpy()
+
+                with autocast(device_type='cuda' if self.device.startswith('cuda') else 'cpu', enabled=self.use_mixed_precision):
+                    outputs = self.model(images)
+
+                if self.model_type == 'binary':
+                    logits = outputs
+                else:
+                    logits, _ = outputs
+
+                probs = torch.softmax(logits, dim=1).cpu().numpy()
+                preds = probs.argmax(axis=1)
+                # For binary AUC; harmless placeholder for multiclass
+                pos_probs = probs[:, 1] if probs.shape[1] > 1 else probs[:, 0]
+
+                all_preds.extend(preds.tolist())
+                all_targets.extend(labels.tolist())
+                all_pos_probs.extend(pos_probs.tolist())
+
+        self.metrics.reset()
+        self.metrics.add_batch(all_preds, all_pos_probs, all_targets)
+        metrics = self.metrics.calculate_metrics()
         return metrics
     
     def train(self, train_loader: DataLoader, val_loader: DataLoader):
@@ -211,21 +270,44 @@ class PneumoniaTrainer:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='configs/config.yaml')
-    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument(
+    '--device',
+    type=str,
+    default='cuda' if torch.cuda.is_available() else 'cpu')
     args = parser.parse_args()
     
     trainer = PneumoniaTrainer(args.config, device=args.device)
     
     train_loader, val_loader, test_loader = create_data_loaders(
         data_dir=trainer.config['data']['data_dir'],
-        csv_file=trainer.config['data']['csv_file'],
+        csv_file=trainer.config['data'].get('csv_file'),
         batch_size=trainer.config['training']['batch_size'],
+        image_size=trainer.config['data'].get('image_size', 224),
+        train_split=trainer.config['data'].get('train_split', 0.7),
+        val_split=trainer.config['data'].get('val_split', 0.15),
+        test_split=trainer.config['data'].get('test_split', 0.15),
         num_workers=trainer.config['data']['num_workers'],
         augment_train=trainer.config['data']['augment_train'],
         seed=trainer.config['data']['seed']
     )
     
     trainer.train(train_loader, val_loader)
+
+    # Optional: evaluate on test split if present
+    if test_loader is not None:
+        # Load best checkpoint for evaluation if available
+        best_path = trainer.checkpoint_dir / 'best_model.pth'
+        if best_path.exists():
+            ckpt = torch.load(best_path, map_location=trainer.device, weights_only=False)
+            trainer.model.load_state_dict(ckpt['model_state_dict'])
+        test_metrics = trainer.evaluate(test_loader, name="test")
+        logger.info(f"Test - Acc: {test_metrics.get('accuracy', 0.0):.4f}, F1: {test_metrics.get('f1', 0.0):.4f}")
+
+        # Save metrics to outputs/
+        out_dir = Path(trainer.config['paths'].get('output_dir', 'outputs/'))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with open(out_dir / 'test_metrics.yaml', 'w') as f:
+            yaml.safe_dump(test_metrics, f, sort_keys=False)
 
 
 if __name__ == '__main__':

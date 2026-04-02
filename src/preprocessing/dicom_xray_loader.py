@@ -24,6 +24,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.dcm', '.bmp', '.tif', '.tiff', '.webp')
+
 
 def load_dicom(dicom_path: str) -> np.ndarray:
     """
@@ -85,21 +87,24 @@ def get_image_statistics(image_dir: str) -> Tuple[np.ndarray, np.ndarray]:
     logger.info(f"Calculating image statistics for {image_dir}...")
     
     images = []
-    image_extensions = ('.jpg', '.jpeg', '.png', '.dcm')
-    
-    for file in os.listdir(image_dir):
-        if file.lower().endswith(image_extensions):
-            file_path = os.path.join(image_dir, file)
+    image_dir = str(image_dir)
+
+    # Walk recursively to support folder-based datasets
+    for root, _, files in os.walk(image_dir):
+        for file in files:
+            if not file.lower().endswith(IMAGE_EXTENSIONS):
+                continue
+            file_path = os.path.join(root, file)
             try:
                 if file.lower().endswith('.dcm'):
                     img = load_dicom(file_path)
                 else:
                     img = load_image(file_path)
-                
+
                 # Resize to standard size
                 img = cv2.resize(img, (224, 224))
                 images.append(img)
-            except:
+            except Exception:
                 continue
     
     if not images:
@@ -221,7 +226,7 @@ class XrayDataset(Dataset):
 
 def create_data_loaders(
     data_dir: str,
-    csv_file: str,
+    csv_file: Optional[str] = None,
     batch_size: int = 32,
     image_size: int = 224,
     train_split: float = 0.7,
@@ -249,20 +254,55 @@ def create_data_loaders(
     Returns:
         Tuple of (train_loader, val_loader, test_loader)
     """
-    import pandas as pd
-    
     # Set random seed
     np.random.seed(seed)
     torch.manual_seed(seed)
-    
-    # Load CSV
-    logger.info(f"Loading data from {csv_file}...")
-    df = pd.read_csv(csv_file)
-    
-    # Prepare paths and labels
-    image_paths = [os.path.join(data_dir, img) for img in df['image_name']]
-    labels = df['label'].values
-    severity_labels = df['severity'].values if 'severity' in df.columns else None
+
+    data_dir = str(data_dir)
+
+    image_paths: List[str] = []
+    labels: np.ndarray
+    severity_labels: Optional[np.ndarray] = None
+
+    # Option A: CSV-based dataset (legacy)
+    if csv_file and os.path.exists(str(csv_file)):
+        import pandas as pd
+
+        logger.info(f"Loading data from {csv_file}...")
+        df = pd.read_csv(csv_file)
+
+        # Prepare paths and labels
+        image_paths = [os.path.join(data_dir, img) for img in df['image_name']]
+        labels = df['label'].values
+        severity_labels = df['severity'].values if 'severity' in df.columns else None
+
+    # Option B: folder-based dataset (recommended)
+    else:
+        # Use immediate subfolders of data_dir as class names
+        class_dirs = [
+            p for p in sorted(Path(data_dir).iterdir())
+            if p.is_dir() and not p.name.startswith('.')
+        ]
+
+        if len(class_dirs) < 2:
+            raise ValueError(
+                f"Folder-based dataset expects at least 2 class subfolders under: {data_dir}\n"
+                f"Found: {[p.name for p in class_dirs]}"
+            )
+
+        class_to_idx = {p.name: i for i, p in enumerate(class_dirs)}
+        logger.info(f"Detected classes: {class_to_idx}")
+
+        tmp_labels: List[int] = []
+        for class_dir in class_dirs:
+            for root, _, files in os.walk(str(class_dir)):
+                for file in files:
+                    if not file.lower().endswith(IMAGE_EXTENSIONS):
+                        continue
+                    image_paths.append(os.path.join(root, file))
+                    tmp_labels.append(class_to_idx[class_dir.name])
+
+        labels = np.array(tmp_labels, dtype=np.int64)
     
     # Filter valid paths
     valid_indices = [i for i, p in enumerate(image_paths) if os.path.exists(p)]
@@ -289,8 +329,16 @@ def create_data_loaders(
     )
     
     # Split dataset
-    train_size = int(len(dataset) * train_split)
-    val_size = int(len(dataset) * val_split)
+    if (train_split + val_split + test_split) <= 0:
+        raise ValueError("train_split + val_split + test_split must be > 0")
+
+    total = train_split + val_split + test_split
+    train_split_n = train_split / total
+    val_split_n = val_split / total
+    test_split_n = test_split / total
+
+    train_size = int(len(dataset) * train_split_n)
+    val_size = int(len(dataset) * val_split_n)
     test_size = len(dataset) - train_size - val_size
     
     train_dataset, val_dataset, test_dataset = random_split(
@@ -327,8 +375,8 @@ def create_data_loaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True
-    )
-    
+    ) if test_size > 0 else None
+
     return train_loader, val_loader, test_loader
 
 
