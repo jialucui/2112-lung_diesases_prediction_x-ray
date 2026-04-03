@@ -1,14 +1,15 @@
 # Model Configuration
 model:
-  model_type: multi_task
+  model_type: multi_task  # 'binary' 或 'multi_task'
   name: densenet121
-  num_classes: 3
-  severity_classes: 5
+  num_classes: 3  # 肺炎类型数量
+  severity_classes: 5  # 严重程度分档
   pretrained: true
 
+# Data Configuration
 data:
-  data_dir: pneumonia/
-  csv_file: null
+  data_dir: pneumonia/  # 训练数据目录
+  csv_file: null  # CSV 文件（可选）
   image_size: 224
   train_split: 0.7
   val_split: 0.15
@@ -17,6 +18,7 @@ data:
   num_workers: 4
   seed: 42
 
+# Training Configuration
 training:
   batch_size: 32
   learning_rate: 0.001
@@ -30,17 +32,21 @@ training:
     binary_classification: 0.6
     severity_prediction: 0.4
 
+# Evaluation Configuration
 evaluation:
-  eval_freq: 5
+  eval_freq: 5  # 每 5 个 epoch 评估一次
 
+# Paths
 paths:
   checkpoint_dir: checkpoints/
   log_dir: logs/
   output_dir: outputs/
 
+# Inference Configuration
 inference:
   class_display_names:
     - Normal
     - Virus Pneumonia
     - Bacteria Pneumonia
   severity_bin_centers: [10, 30, 50, 70, 90]
+  
