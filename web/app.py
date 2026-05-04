@@ -1,22 +1,31 @@
 # web/app.py
 """
 Lung Disease Prediction API - Complete FastAPI Application
-支持多任务学习：肺炎分类 + 严重程度预测
+支持多任务学习：肺炎分类 + 严重程度预测；首页提供图片上传界面。
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
-import logging
-import io
-import torch
-from pathlib import Path
-import uvicorn
-from datetime import datetime
+from __future__ import annotations
 
-# Import your prediction module
+import logging
+import os
+import sys
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import torch
+import uvicorn
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from src.inference.predictor import PneumoniaPredictor
 
 # Configure logging
@@ -57,6 +66,7 @@ load_error: Optional[str] = None
 
 class PredictionResult(BaseModel):
     """预测结果数据模型"""
+
     image_name: str
     model_type: str
     predicted_class: str
@@ -65,6 +75,8 @@ class PredictionResult(BaseModel):
     severity_estimated_percent: Optional[float] = None
     severity_bin_probabilities: Optional[Dict[str, float]] = None
     severity_interpretation: Optional[str] = None
+    severity_note: Optional[str] = None
+    report: Optional[str] = None
     timestamp: str
     processing_time_ms: float
 
@@ -143,120 +155,100 @@ async def health_check():
     )
 
 
+def _allowed_image(file: UploadFile) -> bool:
+    ct = (file.content_type or "").lower()
+    if ct in ("image/jpeg", "image/png", "image/jpg"):
+        return True
+    name = (file.filename or "").lower()
+    return name.endswith((".jpg", ".jpeg", ".png"))
+
+
 @app.post("/api/v1/predict", response_model=PredictionResult)
 async def predict(file: UploadFile = File(...)):
     """
-    预测端点 - 上传X光图像进行预测
-    
-    Args:
-        file: 上传的图像文件 (JPG, PNG等)
-    
-    Returns:
-        PredictionResult: 预测结果
-        
-    Raises:
-        HTTPException: 模型未加载或预测失败
+    预测端点 - 上传 X 光图像，返回各类肺炎概率与严重程度。
     """
-    if not model_loaded:
-        raise HTTPException(
-            status_code=503,
-            detail=f"模型未加载: {load_error}"
-        )
-    
+    if not model_loaded or predictor is None:
+        raise HTTPException(status_code=503, detail=f"模型未加载: {load_error}")
+
+    temp_image_path: Optional[str] = None
     try:
-        import time
         start_time = time.time()
-        
-        # 验证文件类型
-        if file.content_type not in ['image/jpeg', 'image/png', 'image/jpg']:
+
+        if not _allowed_image(file):
             raise HTTPException(
                 status_code=400,
-                detail=f"不支持的文件类型: {file.content_type}"
+                detail=f"请上传 JPG 或 PNG 图像（当前 Content-Type: {file.content_type}）",
             )
-        
-        # 读取文件内容
+
         contents = await file.read()
-        temp_image_path = f"/tmp/{file.filename}"
-        
-        with open(temp_image_path, 'wb') as f:
-            f.write(contents)
-        
-        # 进行预测
-        logger.info(f"预测图像: {file.filename}")
+        suffix = Path(file.filename or "upload.jpg").suffix.lower()
+        if suffix not in (".jpg", ".jpeg", ".png"):
+            suffix = ".jpg"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(contents)
+            temp_image_path = tmp.name
+
+        logger.info("预测图像: %s", file.filename)
         prediction_result = predictor.predict(temp_image_path)
-        
-        processing_time = (time.time() - start_time) * 1000  # 转换为毫秒
-        
-        # 构建响应
+
+        processing_time = (time.time() - start_time) * 1000
+        probs = prediction_result.get("class_probabilities") or {}
+        pred_class = prediction_result.get("predicted_class") or ""
+        confidence = float(probs.get(pred_class, 0.0))
+
+        report_text = PneumoniaPredictor.format_report(prediction_result)
+
         result = PredictionResult(
-            image_name=file.filename,
-            model_type=prediction_result.get('model_type'),
-            predicted_class=prediction_result.get('predicted_class'),
-            confidence=prediction_result.get('class_probabilities', {}).get(
-                prediction_result.get('predicted_class'), 0
-            ),
-            class_probabilities=prediction_result.get('class_probabilities', {}),
-            severity_estimated_percent=prediction_result.get('severity_estimated_percent'),
-            severity_bin_probabilities=prediction_result.get('severity_bin_probabilities'),
-            severity_interpretation=prediction_result.get('severity_interpretation'),
+            image_name=file.filename or "upload",
+            model_type=prediction_result.get("model_type", ""),
+            predicted_class=pred_class,
+            confidence=confidence,
+            class_probabilities={k: float(v) for k, v in probs.items()},
+            severity_estimated_percent=prediction_result.get("severity_estimated_percent"),
+            severity_bin_probabilities=prediction_result.get("severity_bin_probabilities"),
+            severity_interpretation=prediction_result.get("severity_interpretation"),
+            severity_note=prediction_result.get("severity_note"),
+            report=report_text,
             timestamp=datetime.now().isoformat(),
-            processing_time_ms=processing_time
+            processing_time_ms=processing_time,
         )
-        
-        logger.info(f"预测完成: {result.predicted_class} (置信度: {result.confidence:.2%})")
+
+        logger.info("预测完成: %s (置信度: %.2f%%)", result.predicted_class, result.confidence * 100)
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"预测失败: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"预测失败: {str(e)}"
-        )
+        logger.error("预测失败: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"预测失败: {str(e)}") from e
     finally:
-        # 清理临时文件
-        import os
-        try:
-            if temp_image_path and os.path.exists(temp_image_path):
-                os.remove(temp_image_path)
-        except:
-            pass
+        if temp_image_path and os.path.isfile(temp_image_path):
+            try:
+                os.unlink(temp_image_path)
+            except OSError:
+                pass
 
 
 @app.post("/api/v1/predict_batch")
 async def predict_batch(files: list[UploadFile] = File(...)):
-    """
-    批量预测端点
-    
-    Args:
-        files: 上传的多个图像文件
-    
-    Returns:
-        list: 预测结果列表
-    """
-    if not model_loaded:
-        raise HTTPException(
-            status_code=503,
-            detail=f"模型未加载: {load_error}"
-        )
-    
-    results = []
-    for file in files:
+    """批量预测（每张图单独保存临时文件并推理）。"""
+    if not model_loaded or predictor is None:
+        raise HTTPException(status_code=503, detail=f"模型未加载: {load_error}")
+
+    results: list[Any] = []
+    for uf in files:
         try:
-            # 临时调用单个预测端点
-            temp_result = await predict(file)
-            results.append(temp_result)
+            item = await predict(uf)
+            results.append(item.model_dump())
         except HTTPException as e:
-            results.append({
-                "image_name": file.filename,
-                "error": e.detail
-            })
-    
+            results.append({"image_name": uf.filename, "error": e.detail})
+
     return {
         "total": len(files),
-        "successful": sum(1 for r in results if 'error' not in r),
-        "results": results
+        "successful": sum(1 for r in results if "error" not in r),
+        "results": results,
     }
 
 
@@ -319,6 +311,7 @@ async def get_info():
             "device": 'cuda' if torch.cuda.is_available() else 'cpu'
         },
         "endpoints": {
+            "web_ui": "/ (GET) — 浏览器打开上传图片",
             "predict": "/api/v1/predict (POST)",
             "predict_batch": "/api/v1/predict_batch (POST)",
             "health": "/api/v1/health (GET)",
@@ -328,15 +321,22 @@ async def get_info():
     }
 
 
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
 @app.get("/")
 async def root():
-    """根路由 - 重定向到文档"""
-    return {
-        "message": "欢迎使用肺部疾病辅助诊断系统 API",
-        "docs": "/api/v1/docs",
-        "health": "/api/v1/health",
-        "info": "/api/v1/info"
-    }
+    """网页上传界面（图片输入 → 肺炎概率 + 严重程度）。"""
+    index = STATIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(index, media_type="text/html; charset=utf-8")
+    return JSONResponse(
+        {
+            "message": "未找到 web/static/index.html，请检查部署",
+            "docs": "/api/v1/docs",
+            "health": "/api/v1/health",
+        }
+    )
 
 
 # ============================================================================
