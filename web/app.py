@@ -1,7 +1,7 @@
 # web/app.py
 """
-Lung Disease Prediction API - Complete FastAPI Application
-支持多任务学习：肺炎分类 + 严重程度预测；首页提供图片上传界面。
+Lung Disease Prediction API — chest X-ray classification + severity (assistive).
+Home page: upload an image and view probabilities + severity.
 """
 
 from __future__ import annotations
@@ -26,6 +26,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+
+def _resolve_config_yaml() -> str:
+    """Prefer configs/config.yaml at repo root; fallback to src/configs/config.yaml."""
+    for rel in ("configs/config.yaml", "src/configs/config.yaml"):
+        p = _REPO_ROOT / rel
+        if p.is_file():
+            return str(p)
+    return str(_REPO_ROOT / "configs/config.yaml")
+
+
 from src.inference.predictor import PneumoniaPredictor
 
 # Configure logging
@@ -39,14 +49,14 @@ logger = logging.getLogger(__name__)
 # 初始化应用和模型
 # ============================================================================
 app = FastAPI(
-    title="肺部疾病辅助诊断系统 API",
-    description="基于深度学习的胸部X光肺部疾病分类和严重程度预测",
+    title="Lung X-ray assistive API",
+    description="Chest X-ray class probabilities and severity estimate (not medical advice)",
     version="1.0.0",
     docs_url="/api/v1/docs",
-    redoc_url="/api/v1/redoc"
+    redoc_url="/api/v1/redoc",
 )
 
-# CORS 中间件配置
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,7 +65,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 全局模型加载状态
 predictor: Optional[PneumoniaPredictor] = None
 model_loaded: bool = False
 load_error: Optional[str] = None
@@ -65,7 +74,7 @@ load_error: Optional[str] = None
 # ============================================================================
 
 class PredictionResult(BaseModel):
-    """预测结果数据模型"""
+    """Prediction payload returned by /api/v1/predict."""
 
     image_name: str
     model_type: str
@@ -82,7 +91,7 @@ class PredictionResult(BaseModel):
 
 
 class HealthCheckResponse(BaseModel):
-    """健康检查响应"""
+    """Health check response."""
     status: str
     model_loaded: bool
     device: Optional[str] = None
@@ -90,7 +99,7 @@ class HealthCheckResponse(BaseModel):
 
 
 class ReportRequest(BaseModel):
-    """生成报告请求"""
+    """Report request (optional legacy)."""
     image_path: str
     include_details: bool = True
 
@@ -101,38 +110,38 @@ class ReportRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """应用启动时加载模型"""
+    """Load model on startup."""
     global predictor, model_loaded, load_error
-    
+
     try:
-        logger.info("正在加载模型...")
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        logger.info(f"使用设备: {device}")
-        
+        logger.info("Loading model...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info("Device: %s", device)
+
+        ckpt = os.environ.get("LUNG_XRAY_CHECKPOINT", "checkpoints/best_model.pth")
         predictor = PneumoniaPredictor.from_config_file(
-            config_path='configs/config.yaml',
-            checkpoint_path='checkpoints/best_model.pth',
+            config_path=_resolve_config_yaml(),
+            checkpoint_path=ckpt,
             device=device,
-            use_dataset_normalization=True
+            use_dataset_normalization=True,
         )
-        
+
         model_loaded = True
-        logger.info("✅ 模型加载成功")
-        
+        logger.info("Model loaded successfully")
+
     except Exception as e:
         load_error = str(e)
         model_loaded = False
-        logger.error(f"❌ 模型加载失败: {load_error}")
+        logger.error("Model load failed: %s", load_error)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """应用关闭时清理资源"""
     global predictor
     if predictor:
         del predictor
         torch.cuda.empty_cache()
-        logger.info("资源已清理")
+        logger.info("Shutdown cleanup done")
 
 
 # ============================================================================
@@ -141,12 +150,6 @@ async def shutdown_event():
 
 @app.get("/api/v1/health", response_model=HealthCheckResponse)
 async def health_check():
-    """
-    健康检查端点
-    
-    Returns:
-        HealthCheckResponse: 应用状态
-    """
     return HealthCheckResponse(
         status="healthy" if model_loaded else "unhealthy",
         model_loaded=model_loaded,
@@ -165,11 +168,9 @@ def _allowed_image(file: UploadFile) -> bool:
 
 @app.post("/api/v1/predict", response_model=PredictionResult)
 async def predict(file: UploadFile = File(...)):
-    """
-    预测端点 - 上传 X 光图像，返回各类肺炎概率与严重程度。
-    """
+    """Upload a chest image; returns class probabilities and severity fields (English copy)."""
     if not model_loaded or predictor is None:
-        raise HTTPException(status_code=503, detail=f"模型未加载: {load_error}")
+        raise HTTPException(status_code=503, detail=f"Model not loaded: {load_error}")
 
     temp_image_path: Optional[str] = None
     try:
@@ -178,7 +179,7 @@ async def predict(file: UploadFile = File(...)):
         if not _allowed_image(file):
             raise HTTPException(
                 status_code=400,
-                detail=f"请上传 JPG 或 PNG 图像（当前 Content-Type: {file.content_type}）",
+                detail=f"Please upload JPG or PNG (Content-Type was: {file.content_type})",
             )
 
         contents = await file.read()
@@ -190,39 +191,40 @@ async def predict(file: UploadFile = File(...)):
             tmp.write(contents)
             temp_image_path = tmp.name
 
-        logger.info("预测图像: %s", file.filename)
+        logger.info("Predict image: %s", file.filename)
         prediction_result = predictor.predict(temp_image_path)
+        prediction_en = PneumoniaPredictor.result_for_english_ui(prediction_result)
 
         processing_time = (time.time() - start_time) * 1000
-        probs = prediction_result.get("class_probabilities") or {}
-        pred_class = prediction_result.get("predicted_class") or ""
+        probs = prediction_en.get("class_probabilities") or {}
+        pred_class = prediction_en.get("predicted_class") or ""
         confidence = float(probs.get(pred_class, 0.0))
 
-        report_text = PneumoniaPredictor.format_report(prediction_result)
+        report_text = PneumoniaPredictor.format_report(prediction_en, language="en")
 
         result = PredictionResult(
             image_name=file.filename or "upload",
-            model_type=prediction_result.get("model_type", ""),
+            model_type=prediction_en.get("model_type", ""),
             predicted_class=pred_class,
             confidence=confidence,
             class_probabilities={k: float(v) for k, v in probs.items()},
-            severity_estimated_percent=prediction_result.get("severity_estimated_percent"),
-            severity_bin_probabilities=prediction_result.get("severity_bin_probabilities"),
-            severity_interpretation=prediction_result.get("severity_interpretation"),
-            severity_note=prediction_result.get("severity_note"),
+            severity_estimated_percent=prediction_en.get("severity_estimated_percent"),
+            severity_bin_probabilities=prediction_en.get("severity_bin_probabilities"),
+            severity_interpretation=prediction_en.get("severity_interpretation"),
+            severity_note=prediction_en.get("severity_note"),
             report=report_text,
             timestamp=datetime.now().isoformat(),
             processing_time_ms=processing_time,
         )
 
-        logger.info("预测完成: %s (置信度: %.2f%%)", result.predicted_class, result.confidence * 100)
+        logger.info("Prediction done: %s (confidence %.2f%%)", result.predicted_class, result.confidence * 100)
         return result
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("预测失败: %s", str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=f"预测失败: {str(e)}") from e
+        logger.error("Prediction failed: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}") from e
     finally:
         if temp_image_path and os.path.isfile(temp_image_path):
             try:
@@ -233,9 +235,9 @@ async def predict(file: UploadFile = File(...)):
 
 @app.post("/api/v1/predict_batch")
 async def predict_batch(files: list[UploadFile] = File(...)):
-    """批量预测（每张图单独保存临时文件并推理）。"""
+    """Batch predict (one temp file per image)."""
     if not model_loaded or predictor is None:
-        raise HTTPException(status_code=503, detail=f"模型未加载: {load_error}")
+        raise HTTPException(status_code=503, detail=f"Model not loaded: {load_error}")
 
     results: list[Any] = []
     for uf in files:
@@ -254,70 +256,52 @@ async def predict_batch(files: list[UploadFile] = File(...)):
 
 @app.get("/api/v1/report/{image_name}")
 async def get_report(image_name: str, include_details: bool = True):
-    """
-    获取预测报告
-    
-    Args:
-        image_name: 图像文件名
-        include_details: 是否包含详细信息
-    
-    Returns:
-        dict: 格式化的诊断报告
-    """
-    if not model_loaded:
-        raise HTTPException(
-            status_code=503,
-            detail="模型未加载"
-        )
-    
+    """Generate report for an image path (must exist on server)."""
+    if not model_loaded or predictor is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
     try:
         # 这里可以从缓存或数据库中获取之前的预测结果
         # 或重新预测
         prediction_result = predictor.predict(image_name)
-        
-        report = PneumoniaPredictor.format_report(prediction_result)
+        prediction_en = PneumoniaPredictor.result_for_english_ui(prediction_result)
+        report = PneumoniaPredictor.format_report(prediction_en, language="en")
         
         return {
             "image_name": image_name,
             "report": report,
-            "raw_prediction": prediction_result if include_details else None,
+            "raw_prediction": prediction_en if include_details else None,
             "timestamp": datetime.now().isoformat()
         }
         
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=404,
-            detail=f"图像未找到: {image_name}"
-        )
+        raise HTTPException(status_code=404, detail=f"Image not found: {image_name}") from None
     except Exception as e:
-        logger.error(f"生成报告失败: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"生成报告失败: {str(e)}"
-        )
+        logger.error("Report failed: %s", str(e))
+        raise HTTPException(status_code=500, detail=f"Report failed: {str(e)}") from e
 
 
 @app.get("/api/v1/info")
 async def get_info():
-    """获取API和模型信息"""
+    """API and model metadata."""
     return {
-        "app_name": "肺部疾病辅助诊断系统",
+        "app_name": "Lung X-ray assistive API",
         "version": "1.0.0",
         "api_version": "v1",
         "model_info": {
             "loaded": model_loaded,
             "type": predictor.model_type if predictor else None,
             "classes": predictor.class_names if predictor else None,
-            "device": 'cuda' if torch.cuda.is_available() else 'cpu'
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
         },
         "endpoints": {
-            "web_ui": "/ (GET) — 浏览器打开上传图片",
+            "web_ui": "/ (GET) — browser upload UI",
             "predict": "/api/v1/predict (POST)",
             "predict_batch": "/api/v1/predict_batch (POST)",
             "health": "/api/v1/health (GET)",
             "info": "/api/v1/info (GET)",
-            "docs": "/api/v1/docs (GET)"
-        }
+            "docs": "/api/v1/docs (GET)",
+        },
     }
 
 
@@ -326,13 +310,13 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @app.get("/")
 async def root():
-    """网页上传界面（图片输入 → 肺炎概率 + 严重程度）。"""
+    """Web UI: upload → class probabilities + severity."""
     index = STATIC_DIR / "index.html"
     if index.is_file():
         return FileResponse(index, media_type="text/html; charset=utf-8")
     return JSONResponse(
         {
-            "message": "未找到 web/static/index.html，请检查部署",
+            "message": "Missing web/static/index.html",
             "docs": "/api/v1/docs",
             "health": "/api/v1/health",
         }
@@ -345,8 +329,7 @@ async def root():
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    """HTTP异常处理"""
-    logger.error(f"HTTP异常: {exc.status_code} - {exc.detail}")
+    logger.error("HTTP %s - %s", exc.status_code, exc.detail)
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -360,16 +343,15 @@ async def http_exception_handler(request, exc):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    """通用异常处理"""
-    logger.error(f"未处理的异常: {str(exc)}", exc_info=True)
+    logger.error("Unhandled error: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
         content={
             "error": True,
             "status_code": 500,
-            "detail": "服务器内部错误",
-            "timestamp": datetime.now().isoformat()
-        }
+            "detail": "Internal server error",
+            "timestamp": datetime.now().isoformat(),
+        },
     )
 
 

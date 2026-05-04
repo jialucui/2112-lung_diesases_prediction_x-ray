@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>胸部 X 线 — 肺炎类型与严重程度（辅助）</title>
+  <title>Chest X-ray — pneumonia type & severity (assistive)</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -115,32 +115,32 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>肺炎类型 &amp; 严重程度分析</h1>
-    <p class="sub">上传一张胸部影像（JPG / PNG），查看各类肺炎概率与严重程度估计。本工具仅供科研 / 教学辅助，不能作为诊断依据。</p>
+    <h1>Pneumonia type &amp; severity</h1>
+    <p class="sub">Upload a chest image (JPG / PNG) to see class probabilities and a severity estimate. For research or education only — not for diagnosis.</p>
 
     <div class="card">
       <label class="drop" id="dropZone">
         <input type="file" id="fileInput" accept="image/jpeg,image/png,image/jpg" />
-        <div id="dropText">点击选择图片，或拖拽到此处</div>
-        <img id="preview" class="preview" alt="预览" />
+        <div id="dropText">Click to choose a file or drag and drop here</div>
+        <img id="preview" class="preview" alt="Preview" />
       </label>
-      <button type="button" id="btn" disabled>开始分析</button>
+      <button type="button" id="btn" disabled>Run analysis</button>
       <div class="err" id="err"></div>
     </div>
 
     <div class="card" id="resultCard" style="display:none;">
       <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem;">
-        <strong>模型结论</strong>
+        <strong>Prediction</strong>
         <span id="predClass"></span>
         <span class="pill" id="modelTag"></span>
       </div>
-      <h2 style="font-size:1rem;margin:0 0 .6rem;color:var(--muted);font-weight:500;">肺炎类型概率</h2>
+      <h2 style="font-size:1rem;margin:0 0 .6rem;color:var(--muted);font-weight:500;">Class probabilities</h2>
       <div id="classBars"></div>
-      <h2 style="font-size:1rem;margin:1rem 0 .6rem;color:var(--muted);font-weight:500;">严重程度</h2>
+      <h2 style="font-size:1rem;margin:1rem 0 .6rem;color:var(--muted);font-weight:500;">Severity</h2>
       <div id="sevBlock"></div>
       <p class="disclaimer" id="sevNote"></p>
       <details style="margin-top:.75rem;">
-        <summary style="cursor:pointer;color:var(--muted);font-size:.85rem;">完整文本报告</summary>
+        <summary style="cursor:pointer;color:var(--muted);font-size:.85rem;">Full text report</summary>
         <pre class="report" id="reportText"></pre>
       </details>
     </div>
@@ -159,7 +159,7 @@
     function setFile(file) {
       if (!file) return;
       if (!/^image\/(jpeg|png|jpg)$/i.test(file.type) && !/\.(jpe?g|png)$/i.test(file.name)) {
-        err.textContent = "请使用 JPG 或 PNG 图片。";
+        err.textContent = "Please use a JPG or PNG image.";
         return;
       }
       err.textContent = "";
@@ -198,7 +198,7 @@
       if (!currentFile) return;
       err.textContent = "";
       btn.disabled = true;
-      btn.textContent = "分析中…";
+      btn.textContent = "Analyzing…";
       resultCard.style.display = "none";
 
       const fd = new FormData();
@@ -216,7 +216,9 @@
 
         document.getElementById("predClass").textContent = data.predicted_class || "—";
         document.getElementById("modelTag").textContent =
-          data.model_type === "multi_task" ? "多任务（分类+严重度）" : "仅分类（严重度为粗略估计）";
+          data.model_type === "multi_task"
+            ? "Multi-task (class + severity)"
+            : "Classification only (severity is approximate)";
 
         const probs = data.class_probabilities || {};
         document.getElementById("classBars").innerHTML = Object.entries(probs)
@@ -229,15 +231,17 @@
 
         if (data.severity_bin_probabilities && Object.keys(data.severity_bin_probabilities).length) {
           sev.innerHTML =
-            `<p style="margin:.3rem 0 .6rem;">综合严重度约 <strong style="color:var(--accent);font-size:1.15rem;">${data.severity_estimated_percent ?? "—"}%</strong></p>` +
+            `<p style="margin:.3rem 0 .6rem;">Blended severity ~ <strong style="color:var(--accent);font-size:1.15rem;">${data.severity_estimated_percent ?? "—"}%</strong></p>` +
             Object.entries(data.severity_bin_probabilities).map(([k, v]) => barHtml(k, v)).join("");
           if (data.severity_interpretation) {
             note.textContent = data.severity_interpretation;
           }
         } else {
           sev.innerHTML =
-            `<p style="margin:.3rem 0;">估计严重度约 <strong style="color:var(--accent);font-size:1.15rem;">${data.severity_estimated_percent ?? "—"}%</strong></p>`;
-          note.textContent = data.severity_note || "当前模型为仅分类权重时，严重度为基于「非正常」概率的粗略估计。";
+            `<p style="margin:.3rem 0;">Estimated severity ~ <strong style="color:var(--accent);font-size:1.15rem;">${data.severity_estimated_percent ?? "—"}%</strong></p>`;
+          note.textContent =
+            data.severity_note ||
+            "With a classification-only checkpoint, severity is a rough estimate from non-normal probability.";
         }
 
         document.getElementById("reportText").textContent = data.report || "";
@@ -246,7 +250,7 @@
         err.textContent = String(e);
       } finally {
         btn.disabled = false;
-        btn.textContent = "开始分析";
+        btn.textContent = "Run analysis";
       }
     });
   </script>

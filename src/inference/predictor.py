@@ -267,7 +267,42 @@ class PneumoniaPredictor:
         return f"综合估计严重程度约 {pct:.1f}%（{base}，模型分档置信度 {float(sev_prob[pred_bin]):.1%}）"
 
     @staticmethod
-    def format_report(result: Dict[str, Any]) -> str:
+    def result_for_english_ui(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Copy of prediction dict with English severity notes / bin labels for web API."""
+        r = dict(result)
+        mt = r.get("model_type")
+        if mt == "binary":
+            r["severity_note"] = (
+                "Rough severity from non-normal probability (classification-only checkpoint). "
+                "Train a multi_task model for calibrated severity bins."
+            )
+        elif mt == "multi_task":
+            idx = int(r.get("severity_predicted_bin_index", 0))
+            tier = ["minimal", "mild", "moderate", "severe", "critical"]
+            name = tier[idx] if idx < len(tier) else f"bin_{idx}"
+            pct = r.get("severity_estimated_percent", 0)
+            vals = list((r.get("severity_bin_probabilities") or {}).values())
+            p_bin = float(vals[idx]) if idx < len(vals) else 0.0
+            r["severity_interpretation"] = (
+                f"Estimated overall severity ~{pct}% ({name}; bin confidence {p_bin:.1%})."
+            )
+            old = r.get("severity_bin_probabilities") or {}
+            if old:
+                vlist = [float(x) for x in old.values()]
+                n = len(vlist)
+                if n == 1:
+                    tiers = [50]
+                else:
+                    tiers = [round(10 + i * (80 / (n - 1))) for i in range(n)]
+                r["severity_bin_probabilities"] = {
+                    f"~{tiers[i]}% tier": vlist[i] for i in range(n)
+                }
+        return r
+
+    @staticmethod
+    def format_report(result: Dict[str, Any], language: str = "zh") -> str:
+        if language.lower().startswith("en"):
+            return PneumoniaPredictor._format_report_en(result)
         lines = [
             "=" * 52,
             "胸部 X 线 / 肺炎辅助分析（仅辅助，不能替代医生诊断）",
@@ -294,6 +329,42 @@ class PneumoniaPredictor:
             lines.append(
                 f"  → 综合估计严重度: 约 {result.get('severity_estimated_percent', 0)}% "
                 f"（加权于各档代表百分比）"
+            )
+            lines.append(f"  · {result.get('severity_interpretation', '')}")
+        lines.append("=" * 52)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_report_en(result: Dict[str, Any]) -> str:
+        lines = [
+            "=" * 52,
+            "Chest X-ray — assisted analysis (not a medical diagnosis)",
+            "=" * 52,
+            f"Image: {result.get('image_path', '')}",
+            "",
+            "Class probabilities",
+        ]
+        for k, v in result.get("class_probabilities", {}).items():
+            lines.append(f"  · {k}: {v:.2%}")
+        lines.append(f"  → Predicted class: {result.get('predicted_class', '')}")
+        lines.append("")
+
+        if result.get("model_type") == "binary" and "severity_estimated_percent" in result:
+            lines.append("Severity (rough, classification-only model)")
+            lines.append(
+                f"  → Estimated severity ~{result.get('severity_estimated_percent')}% "
+                "(from overall non-normal probability)"
+            )
+            lines.append(f"  · {result.get('severity_note', '')}")
+            lines.append("")
+
+        if result.get("model_type") == "multi_task":
+            lines.append("Severity (bins + blended percent)")
+            for k, v in result.get("severity_bin_probabilities", {}).items():
+                lines.append(f"  · {k}: {v:.2%}")
+            lines.append(
+                f"  → Blended severity estimate: ~{result.get('severity_estimated_percent', 0)}% "
+                "(weighted by tier centers)"
             )
             lines.append(f"  · {result.get('severity_interpretation', '')}")
         lines.append("=" * 52)
