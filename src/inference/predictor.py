@@ -1,5 +1,5 @@
 """
-Unified inference: 肺炎类型（多分类）+ 严重程度（分档概率与综合百分比估计）.
+Inference: multi-class chest X-ray + optional severity + optional tabular (age/gender).
 """
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -34,10 +34,17 @@ def _class_folder_order(data_path: Path) -> Optional[List[str]]:
     return [d.name for d in dirs]
 
 
+def _find_class_index(names: List[str], *keywords: str) -> Optional[int]:
+    for i, raw in enumerate(names):
+        s = str(raw)
+        sl = s.lower()
+        if any((k.lower() in sl) or (k in s) for k in keywords):
+            return i
+    return None
+
+
 class PneumoniaPredictor:
-    """
-    加载与训练一致的 config + checkpoint，对单张/批量图像推理。
-    """
+    """Load config + checkpoint; run single-image inference."""
 
     def __init__(
         self,
@@ -58,8 +65,11 @@ class PneumoniaPredictor:
         self.model_type = m.get("model_type", "binary")
         self.num_classes = int(m.get("num_classes", 2))
         self.severity_classes = int(m.get("severity_classes", 5))
+        self.tabular_dim = int(m.get("tabular_dim", 0))
+        dcfg = config.get("data") or {}
+        self.tabular_extra_columns: List[str] = list(dcfg.get("tabular_extra_columns") or [])
 
-        data_dir = config.get("data", {}).get("data_dir")
+        data_dir = dcfg.get("data_dir")
         data_path = _resolve_path(PROJECT_ROOT, data_dir) if data_dir else None
 
         inf = config.get("inference") or {}
@@ -72,14 +82,19 @@ class PneumoniaPredictor:
         else:
             self.class_names = [f"class_{i}" for i in range(self.num_classes)]
 
+        self._normal_idx: Optional[int] = _find_class_index(self.class_names, "normal", "正常")
+        self._virus_idx: Optional[int] = _find_class_index(self.class_names, "virus", "病毒")
+        self._bacteria_idx: Optional[int] = _find_class_index(
+            self.class_names, "bacteria", "细菌", "bacterium"
+        )
+
         centers = inf.get("severity_bin_centers")
         if centers and len(centers) == self.severity_classes:
             self.severity_bin_centers = np.array(centers, dtype=np.float32)
         else:
-            # 均匀分布在 10%–90%
             self.severity_bin_centers = np.linspace(10.0, 90.0, self.severity_classes).astype(np.float32)
 
-        image_size = int(config.get("data", {}).get("image_size", 224))
+        image_size = int(dcfg.get("image_size", 224))
         if mean is None or std is None:
             mean = np.array([0.485, 0.456, 0.406])
             std = np.array([0.229, 0.224, 0.225])
@@ -98,8 +113,9 @@ class PneumoniaPredictor:
                 self.model.load_state_dict(ckpt["model_state_dict"], strict=True)
             except Exception as e:
                 raise RuntimeError(
-                    "无法加载权重。若你曾用「仅分类」模型训练，而当前 config 为 multi_task，"
-                    "请重新训练生成 checkpoints/best_model.pth，或把 model.model_type 改回与权重一致。"
+                    "Checkpoint incompatible with current model config "
+                    "(e.g. binary vs multi_task, or tabular_dim mismatch). "
+                    "Align configs/config.yaml with how the checkpoint was trained."
                 ) from e
             logger.info("Loaded checkpoint %s", checkpoint_path)
 
@@ -140,6 +156,7 @@ class PneumoniaPredictor:
             device=device,
             num_classes=m.get("num_classes"),
             severity_classes=m.get("severity_classes"),
+            tabular_dim=int(m.get("tabular_dim", 0)),
         )
 
         if not ck_path.is_file():
@@ -150,13 +167,10 @@ class PneumoniaPredictor:
         try:
             model.load_state_dict(sd, strict=True)
         except Exception:
-            # 旧权重：仅 DenseNet 单头分类（BinaryClassifier，键为 model.*）
-            if any(k.startswith("model.") for k in sd) and not any(
-                k.startswith("backbone.") for k in sd
-            ):
+            if any(k.startswith("model.") for k in sd) and not any(k.startswith("backbone.") for k in sd):
                 logger.warning(
-                    "检测到仅分类权重（BinaryClassifier）。将忽略 config 中的 multi_task，"
-                    "严重程度仅作粗略估计；完整分档请用 multi_task 重新训练。"
+                    "Classification-only checkpoint (BinaryClassifier). "
+                    "Severity will be approximate unless you train multi_task."
                 )
                 w = sd.get("model.classifier.weight")
                 if w is None:
@@ -181,77 +195,120 @@ class PneumoniaPredictor:
         image = Image.open(image_path).convert("RGB")
         return self.transform(image)
 
+    def _tabular_batch(
+        self,
+        batch_size: int,
+        age: Optional[float],
+        gender: Optional[str],
+        extra: Optional[Dict[str, Any]],
+    ) -> Optional[torch.Tensor]:
+        if self.tabular_dim <= 0:
+            return None
+        from src.preprocessing.dicom_xray_loader import tabular_vector_from_patient
+
+        vec = tabular_vector_from_patient(
+            self.tabular_dim,
+            age=age,
+            gender=gender,
+            extra_columns=self.tabular_extra_columns or None,
+            extra_values=extra,
+        )
+        t = torch.from_numpy(vec).to(self.device).unsqueeze(0).expand(batch_size, -1).float()
+        return t
+
     @torch.no_grad()
-    def predict(self, image_path: Union[str, Path]) -> Dict[str, Any]:
+    def predict(
+        self,
+        image_path: Union[str, Path],
+        age: Optional[float] = None,
+        gender: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         path = Path(image_path).expanduser()
         if not path.is_file():
             raise FileNotFoundError(f"Image not found: {path}")
 
         batch = self._tensor_from_image_path(path).unsqueeze(0).to(self.device)
-        return self._forward_batch(batch, str(path))
+        tab = self._tabular_batch(batch.shape[0], age, gender, extra)
+        return self._forward_batch(batch, str(path), tabular=tab)
 
-    def _forward_batch(self, batch: torch.Tensor, path_label: str) -> Dict[str, Any]:
-        outputs = self.model(batch)
+    def _pneumonia_and_subtype(self, probs: np.ndarray) -> Tuple[float, Dict[str, float]]:
+        """probs shape (C,) sums to 1."""
+        p = probs.astype(np.float64)
+        if self._normal_idx is not None and 0 <= self._normal_idx < len(p):
+            p_pneu = float(np.clip(1.0 - p[self._normal_idx], 0.0, 1.0))
+        else:
+            p_pneu = 1.0
 
+        subtype: Dict[str, float] = {}
+        vi, bi = self._virus_idx, self._bacteria_idx
+        if vi is not None and bi is not None and vi < len(p) and bi < len(p):
+            pv, pb = float(p[vi]), float(p[bi])
+            denom = pv + pb
+            if denom > 1e-8:
+                subtype["p_viral_if_infection"] = pv / denom
+                subtype["p_bacterial_if_infection"] = pb / denom
+            else:
+                subtype["p_viral_if_infection"] = 0.5
+                subtype["p_bacterial_if_infection"] = 0.5
+            subtype["p_viral_raw"] = pv
+            subtype["p_bacterial_raw"] = pb
+        return p_pneu, subtype
+
+    def _forward_batch(
+        self,
+        batch: torch.Tensor,
+        path_label: str,
+        tabular: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
         if self.model_type == "binary":
-            logits = outputs
+            logits = self.model(batch)
             probs = torch.softmax(logits, dim=1)
             pred_idx = int(torch.argmax(probs, dim=1).item())
             p = probs[0].detach().cpu().numpy()
-            normal_idx = next(
-                (
-                    i
-                    for i, n in enumerate(self.class_names)
-                    if "正常" in n or "normal" in n.lower() or "Normal" in n
-                ),
-                None,
-            )
-            if normal_idx is None and len(p) == 3:
-                normal_idx = 1
-            p_normal = (
-                float(p[normal_idx])
-                if normal_idx is not None and normal_idx < len(p)
-                else 0.0
-            )
-            rough_sev = (1.0 - p_normal) * 90.0
+            p_pneu, subtype = self._pneumonia_and_subtype(p)
+            if self._normal_idx is not None and self._normal_idx < len(p):
+                rough_sev = float((1.0 - p[self._normal_idx]) * 90.0)
+            else:
+                rough_sev = float(max(float(x) for x in p) * 90.0)
             out: Dict[str, Any] = {
                 "image_path": path_label,
                 "model_type": "binary",
-                "class_probabilities": {
-                    self.class_names[i]: float(probs[0, i].item()) for i in range(probs.shape[1])
-                },
+                "class_probabilities": {self.class_names[i]: float(p[i]) for i in range(len(p))},
                 "predicted_class_index": pred_idx,
                 "predicted_class": self.class_names[pred_idx] if pred_idx < len(self.class_names) else str(pred_idx),
-                "severity_estimated_percent": round(float(rough_sev), 1),
-                "severity_note": "当前为仅分类权重下的粗略百分比（非 multi_task 分档）；重新训练 multi_task 可得到分档概率。",
+                "pneumonia_probability": round(p_pneu, 4),
+                "subtype": {k: round(float(v), 4) for k, v in subtype.items()},
+                "severity_estimated_percent": round(rough_sev, 1),
+                "severity_note": "Rough severity with classification-only weights; train multi_task for calibrated bins.",
             }
             return out
 
-        class_logits, severity_logits = outputs
+        class_logits, severity_logits = self.model(batch, tabular)
         class_probs = torch.softmax(class_logits, dim=1)
         sev_probs = torch.softmax(severity_logits, dim=1)
 
         pred_c = int(torch.argmax(class_probs, dim=1).item())
         pred_s = int(torch.argmax(sev_probs, dim=1).item())
 
+        p = class_probs[0].detach().cpu().numpy()
+        p_pneu, subtype = self._pneumonia_and_subtype(p)
         sev_pct = float((sev_probs.cpu().numpy() @ self.severity_bin_centers).item())
 
         sev_labels = [
-            f"约{int(self.severity_bin_centers[i])}%档"
+            f"bin~{int(self.severity_bin_centers[i])}%"
             for i in range(self.severity_classes)
         ]
 
         return {
             "image_path": path_label,
             "model_type": "multi_task",
-            "class_probabilities": {
-                self.class_names[i]: float(class_probs[0, i].item()) for i in range(class_probs.shape[1])
-            },
+            "class_probabilities": {self.class_names[i]: float(class_probs[0, i].item()) for i in range(class_probs.shape[1])},
             "predicted_class_index": pred_c,
             "predicted_class": self.class_names[pred_c] if pred_c < len(self.class_names) else str(pred_c),
-            "severity_bin_probabilities": {
-                sev_labels[i]: float(sev_probs[0, i].item()) for i in range(sev_probs.shape[1])
-            },
+            "pneumonia_probability": round(p_pneu, 4),
+            "subtype": {k: round(float(v), 4) for k, v in subtype.items()},
+            "severity_bin_probabilities": {sev_labels[i]: float(sev_probs[0, i].item()) for i in range(sev_probs.shape[1])},
             "severity_predicted_bin_index": pred_s,
             "severity_estimated_percent": round(sev_pct, 1),
             "severity_interpretation": self._severity_text(sev_probs.cpu().numpy()[0], pred_s),
@@ -259,22 +316,18 @@ class PneumoniaPredictor:
 
     def _severity_text(self, sev_prob: np.ndarray, pred_bin: int) -> str:
         tier = ["很轻", "较轻", "中等", "较重", "很重"]
-        if pred_bin < len(tier):
-            base = tier[pred_bin]
-        else:
-            base = f"档位{pred_bin}"
+        base = tier[pred_bin] if pred_bin < len(tier) else f"档位{pred_bin}"
         pct = float(sev_prob @ self.severity_bin_centers)
-        return f"综合估计严重程度约 {pct:.1f}%（{base}，模型分档置信度 {float(sev_prob[pred_bin]):.1%}）"
+        return f"综合估计严重程度约 {pct:.1f}%（{base}，该档置信度 {float(sev_prob[pred_bin]):.1%}）"
 
     @staticmethod
     def result_for_english_ui(result: Dict[str, Any]) -> Dict[str, Any]:
-        """Copy of prediction dict with English severity notes / bin labels for web API."""
         r = dict(result)
         mt = r.get("model_type")
         if mt == "binary":
             r["severity_note"] = (
-                "Rough severity from non-normal probability (classification-only checkpoint). "
-                "Train a multi_task model for calibrated severity bins."
+                "Rough severity from class probabilities (classification-only checkpoint). "
+                "Train multi_task for calibrated severity bins."
             )
         elif mt == "multi_task":
             idx = int(r.get("severity_predicted_bin_index", 0))
@@ -290,13 +343,8 @@ class PneumoniaPredictor:
             if old:
                 vlist = [float(x) for x in old.values()]
                 n = len(vlist)
-                if n == 1:
-                    tiers = [50]
-                else:
-                    tiers = [round(10 + i * (80 / (n - 1))) for i in range(n)]
-                r["severity_bin_probabilities"] = {
-                    f"~{tiers[i]}% tier": vlist[i] for i in range(n)
-                }
+                tiers = [round(10 + i * (80 / max(n - 1, 1))) for i in range(n)] if n > 1 else [50]
+                r["severity_bin_probabilities"] = {f"~{tiers[i]}% tier": vlist[i] for i in range(n)}
         return r
 
     @staticmethod
@@ -305,27 +353,33 @@ class PneumoniaPredictor:
             return PneumoniaPredictor._format_report_en(result)
         lines = [
             "=" * 52,
-            "胸部 X 线 / 肺炎辅助分析（仅辅助，不能替代医生诊断）",
+            "胸部 X 线辅助分析（研究用途，不能替代医生诊断）",
             "=" * 52,
             f"图像: {result.get('image_path', '')}",
             "",
-            "【肺炎类型可能性】",
+            "【肺炎（相对正常）总体可能性】",
         ]
+        if "pneumonia_probability" in result:
+            lines.append(f"  → P(肺炎相关) ≈ {float(result['pneumonia_probability']) * 100:.1f}%")
+        lines.extend(["", "【分型概率】"])
         for k, v in result.get("class_probabilities", {}).items():
-            lines.append(f"  · {k}: {v:.2%}")
-        lines.append(f"  → 模型倾向: {result.get('predicted_class', '')}")
-        lines.append("")
-
-        if result.get("model_type") == "binary" and "severity_estimated_percent" in result:
-            lines.append("【严重程度（粗略，仅分类模型）】")
-            lines.append(f"  → 估计严重度约 {result.get('severity_estimated_percent')}%（基于「非正常」总体可能性）")
-            lines.append(f"  · {result.get('severity_note', '')}")
+            lines.append(f"  · {k}: {float(v):.2%}")
+        lines.append(f"  → 模型倾向类别: {result.get('predicted_class', '')}")
+        sub = result.get("subtype") or {}
+        if sub:
             lines.append("")
+            lines.append("【病毒/细菌相对倾向（原始与条件概率）】")
+            for k, v in sub.items():
+                lines.append(f"  · {k}: {float(v):.4f}")
+        if result.get("model_type") == "binary" and "severity_estimated_percent" in result:
+            lines.append("【严重程度（粗略）】")
+            lines.append(f"  → 估计严重度约 {result.get('severity_estimated_percent')}%")
+            lines.append(f"  · {result.get('severity_note', '')}")
 
         if result.get("model_type") == "multi_task":
-            lines.append("【严重程度（分档 + 综合百分比）】")
-            for k, v in result.get("severity_bin_probabilities", {}).items():
-                lines.append(f"  · {k}: {v:.2%}")
+            lines.append("【严重程度（分档）】")
+            for k, v in (result.get("severity_bin_probabilities") or {}).items():
+                lines.append(f"  · {k}: {float(v):.2%}")
             lines.append(
                 f"  → 综合估计严重度: 约 {result.get('severity_estimated_percent', 0)}% "
                 f"（加权于各档代表百分比）"
@@ -342,30 +396,30 @@ class PneumoniaPredictor:
             "=" * 52,
             f"Image: {result.get('image_path', '')}",
             "",
-            "Class probabilities",
+            "Pneumonia-related probability (vs normal, if a normal class exists)",
         ]
+        if "pneumonia_probability" in result:
+            lines.append(f"  → {float(result['pneumonia_probability']) * 100:.1f}%")
+        lines.extend(["", "Class probabilities"])
         for k, v in result.get("class_probabilities", {}).items():
-            lines.append(f"  · {k}: {v:.2%}")
+            lines.append(f"  · {k}: {float(v):.2%}")
         lines.append(f"  → Predicted class: {result.get('predicted_class', '')}")
-        lines.append("")
-
-        if result.get("model_type") == "binary" and "severity_estimated_percent" in result:
-            lines.append("Severity (rough, classification-only model)")
-            lines.append(
-                f"  → Estimated severity ~{result.get('severity_estimated_percent')}% "
-                "(from overall non-normal probability)"
-            )
-            lines.append(f"  · {result.get('severity_note', '')}")
+        sub = result.get("subtype") or {}
+        if sub:
             lines.append("")
-
+            lines.append("Subtype")
+            for k, v in sub.items():
+                lines.append(f"  · {k}: {float(v):.4f}")
+        lines.append("")
+        if result.get("model_type") == "binary" and "severity_estimated_percent" in result:
+            lines.append("Severity (rough)")
+            lines.append(f"  → ~{result.get('severity_estimated_percent')}%")
+            lines.append(f"  · {result.get('severity_note', '')}")
         if result.get("model_type") == "multi_task":
-            lines.append("Severity (bins + blended percent)")
-            for k, v in result.get("severity_bin_probabilities", {}).items():
-                lines.append(f"  · {k}: {v:.2%}")
-            lines.append(
-                f"  → Blended severity estimate: ~{result.get('severity_estimated_percent', 0)}% "
-                "(weighted by tier centers)"
-            )
+            lines.append("Severity (bins)")
+            for k, v in (result.get("severity_bin_probabilities") or {}).items():
+                lines.append(f"  · {k}: {float(v):.2%}")
+            lines.append(f"  → Blended severity ~{result.get('severity_estimated_percent', 0)}%")
             lines.append(f"  · {result.get('severity_interpretation', '')}")
         lines.append("=" * 52)
         return "\n".join(lines)

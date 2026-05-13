@@ -15,17 +15,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.amp import autocast, GradScaler
+from torch.amp import autocast
+from torch.cuda.amp import GradScaler
 import yaml
 import argparse
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union
 from pathlib import Path
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.models.medical_models import create_model, DenseNetMultiTask
+from src.models.medical_models import create_model
 from src.preprocessing.dicom_xray_loader import create_data_loaders
 from src.evaluation.metrics import MetricsCalculator
 
@@ -36,10 +37,13 @@ logger = logging.getLogger(__name__)
 class PneumoniaTrainer:
     """Trainer class for pneumonia detection model"""
     
-    def __init__(self, config_path: str, device: str = 'cuda'):
-        """Initialize trainer"""
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+    def __init__(self, config_path_or_dict: Union[str, Path, Dict], device: str = 'cuda'):
+        """Initialize trainer from YAML path or an in-memory config dict."""
+        if isinstance(config_path_or_dict, dict):
+            self.config = dict(config_path_or_dict)
+        else:
+            with open(config_path_or_dict, 'r', encoding='utf-8') as f:
+                self.config = yaml.safe_load(f)
         
         self.device = device
         self.best_val_f1 = 0.0
@@ -60,13 +64,15 @@ class PneumoniaTrainer:
             device=device,
             num_classes=self.config['model'].get('num_classes'),
             severity_classes=self.config['model'].get('severity_classes'),
+            tabular_dim=int(self.config['model'].get('tabular_dim', 0)),
         )
         
         # Create optimizer
+        tcfg = self.config["training"]
         self.optimizer = optim.AdamW(
             self.model.parameters(),
-            lr=self.config['training']['learning_rate'],
-            weight_decay=self.config['training']['weight_decay']
+            lr=float(tcfg["learning_rate"]),
+            weight_decay=float(tcfg["weight_decay"]),
         )
         
         # Create scheduler
@@ -84,15 +90,24 @@ class PneumoniaTrainer:
         self.metrics = MetricsCalculator(task='classification')
         
         logger.info(f"Trainer initialized on {device}")
-    
+
+    def _forward(self, batch):
+        images = batch["image"].to(self.device)
+        if self.model_type == "binary":
+            return self.model(images)
+        tab = batch.get("tabular")
+        if tab is not None:
+            tab = tab.to(self.device, dtype=images.dtype)
+        return self.model(images, tab)
+
     def _compute_loss(self, outputs, batch):
         """Compute loss for binary or multi-task model."""
         labels = batch['label'].to(self.device)
 
-        if self.model_type == 'binary':
+        if self.model_type == "binary":
             logits = outputs
             loss = nn.CrossEntropyLoss()(logits, labels)
-            return loss, {'loss': loss.detach()}
+            return loss, {"loss": loss.detach()}
 
         # multi_task
         binary_logits, severity_logits = outputs
@@ -110,9 +125,9 @@ class PneumoniaTrainer:
 
         total_loss = binary_weight * binary_loss + severity_weight * severity_loss
         return total_loss, {
-            'loss': total_loss.detach(),
-            'binary_loss': binary_loss.detach(),
-            'severity_loss': severity_loss.detach(),
+            "loss": total_loss.detach(),
+            "binary_loss": binary_loss.detach(),
+            "severity_loss": severity_loss.detach(),
         }
     
     def train_epoch(self, train_loader: DataLoader, epoch: int) -> Dict:
@@ -123,10 +138,8 @@ class PneumoniaTrainer:
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}")
         
         for batch in progress_bar:
-            images = batch['image'].to(self.device)
-
             with autocast(device_type='cuda' if self.device.startswith('cuda') else 'cpu', enabled=self.use_mixed_precision):
-                outputs = self.model(images)
+                outputs = self._forward(batch)
                 loss, _ = self._compute_loss(outputs, batch)
             
             self.optimizer.zero_grad()
@@ -135,7 +148,7 @@ class PneumoniaTrainer:
                 self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
-                self.config['training']['gradient_clip_max_norm']
+                float(self.config['training']['gradient_clip_max_norm'])
             )
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -156,10 +169,8 @@ class PneumoniaTrainer:
         
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validation"):
-                images = batch['image'].to(self.device)
-
                 with autocast(device_type='cuda' if self.device.startswith('cuda') else 'cpu', enabled=self.use_mixed_precision):
-                    outputs = self.model(images)
+                    outputs = self._forward(batch)
                     loss, _ = self._compute_loss(outputs, batch)
                 
                 total_loss += loss.item()
@@ -200,11 +211,10 @@ class PneumoniaTrainer:
 
         with torch.no_grad():
             for batch in tqdm(loader, desc=f"Evaluating ({name})"):
-                images = batch['image'].to(self.device)
                 labels = batch['label'].cpu().numpy()
 
                 with autocast(device_type='cuda' if self.device.startswith('cuda') else 'cpu', enabled=self.use_mixed_precision):
-                    outputs = self.model(images)
+                    outputs = self._forward(batch)
 
                 if self.model_type == 'binary':
                     logits = outputs
@@ -275,29 +285,64 @@ class PneumoniaTrainer:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/config.yaml')
+    parser.add_argument('--config', type=str, default='src/configs/config.yaml')
     parser.add_argument(
-    '--device',
-    type=str,
-    default='cuda' if torch.cuda.is_available() else 'cpu')
+        '--device',
+        type=str,
+        default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--data-dir', type=str, default=None, help='Override data.data_dir (e.g. data_folder_2)')
+    parser.add_argument('--epochs', type=int, default=None, help='Override training.num_epochs')
+    parser.add_argument(
+        '--num-classes',
+        type=int,
+        default=None,
+        help='Override model.num_classes (must match number of class folders)',
+    )
     args = parser.parse_args()
-    
-    trainer = PneumoniaTrainer(args.config, device=args.device)
-    
-    dcfg = trainer.config['data']
+
+    cfg_path = Path(args.config)
+    if not cfg_path.is_file():
+        repo = Path(__file__).resolve().parents[2]
+        alt = repo / args.config
+        if alt.is_file():
+            cfg_path = alt
+    if not cfg_path.is_file():
+        raise FileNotFoundError(f"Config not found: {args.config}")
+    with open(cfg_path, 'r', encoding='utf-8') as f:
+        cfg = yaml.safe_load(f)
+
+    if args.data_dir is not None:
+        cfg.setdefault('data', {})['data_dir'] = args.data_dir
+    if args.epochs is not None:
+        cfg.setdefault('training', {})['num_epochs'] = int(args.epochs)
+        ne = int(cfg['training']['num_epochs'])
+        p0 = int(cfg['training'].get('early_stopping_patience', 10))
+        cfg['training']['early_stopping_patience'] = max(p0, ne)
+    if args.num_classes is not None:
+        cfg.setdefault('model', {})['num_classes'] = int(args.num_classes)
+
+    trainer = PneumoniaTrainer(cfg, device=args.device)
+
+    dcfg = trainer.config["data"]
+    repo_root = Path(__file__).resolve().parents[2]
     train_loader, val_loader, test_loader = create_data_loaders(
-        data_dir=dcfg['data_dir'],
-        csv_file=dcfg.get('csv_file'),
-        batch_size=trainer.config['training']['batch_size'],
-        image_size=dcfg.get('image_size', 224),
-        train_split=dcfg.get('train_split', 0.7),
-        val_split=dcfg.get('val_split', 0.15),
-        test_split=dcfg.get('test_split', 0.15),
-        num_workers=dcfg['num_workers'],
-        augment_train=dcfg['augment_train'],
-        seed=dcfg['seed'],
-        severity_strategy=dcfg.get('severity_strategy', 'none'),
-        synthetic_severity_by_class=dcfg.get('synthetic_severity_by_class'),
+        data_dir=dcfg["data_dir"],
+        csv_file=dcfg.get("csv_file"),
+        batch_size=trainer.config["training"]["batch_size"],
+        image_size=dcfg.get("image_size", 224),
+        train_split=dcfg.get("train_split", 0.7),
+        val_split=dcfg.get("val_split", 0.15),
+        test_split=dcfg.get("test_split", 0.15),
+        num_workers=dcfg["num_workers"],
+        augment_train=dcfg["augment_train"],
+        seed=dcfg["seed"],
+        severity_strategy=dcfg.get("severity_strategy", "auto"),
+        synthetic_severity_by_class=dcfg.get("synthetic_severity_by_class"),
+        severity_classes=int(trainer.config["model"].get("severity_classes", 5)),
+        metadata_csv=dcfg.get("metadata_csv"),
+        tabular_dim=int(trainer.config["model"].get("tabular_dim", 0)),
+        tabular_extra_columns=dcfg.get("tabular_extra_columns"),
+        project_root=repo_root,
     )
     
     trainer.train(train_loader, val_loader)

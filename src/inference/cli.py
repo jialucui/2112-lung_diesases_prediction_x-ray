@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="configs/config.yaml",
+        default="src/configs/config.yaml",
         help="训练/推理配置文件",
     )
     parser.add_argument("--checkpoint", type=str, default=None, help="覆盖默认 checkpoints/best_model.pth")
@@ -40,6 +40,8 @@ def main() -> None:
         action="store_true",
         help="不用数据集统计量做归一化（更快；可能与训练不一致）",
     )
+    parser.add_argument("--age", type=float, default=None, help="患者年龄（与 model.tabular_dim 联用）")
+    parser.add_argument("--gender", type=str, default=None, help="M / F（与 model.tabular_dim 联用）")
     args = parser.parse_args()
 
     predictor = PneumoniaPredictor.from_config_file(
@@ -50,7 +52,7 @@ def main() -> None:
     )
 
     for img in args.images:
-        result = predictor.predict(img)
+        result = predictor.predict(img, age=args.age, gender=args.gender)
         if args.json:
             print(PneumoniaPredictor.to_json(result))
         else:

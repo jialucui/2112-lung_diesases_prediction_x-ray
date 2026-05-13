@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chest X-ray — pneumonia type & severity (assistive)</title>
+  <title>Chest X-ray — pneumonia, subtype & severity (assistive)</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -96,6 +96,27 @@
       color: var(--ok);
       margin-left: .35rem;
     }
+    .row2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    label.field {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+    }
+    input, select {
+      width: 100%;
+      padding: 0.55rem 0.65rem;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.25);
+      color: var(--text);
+      font-size: 0.95rem;
+    }
     .disclaimer {
       font-size: 0.78rem;
       color: var(--muted);
@@ -115,8 +136,8 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>Pneumonia type &amp; severity</h1>
-    <p class="sub">Upload a chest image (JPG / PNG) to see class probabilities and a severity estimate. For research or education only — not for diagnosis.</p>
+    <h1>Pneumonia, viral vs bacterial &amp; severity</h1>
+    <p class="sub">Upload a chest X-ray (JPG / PNG). The model outputs pneumonia-related probability (when a Normal class exists), class probabilities, optional viral vs bacterial conditioning, and lung-involvement severity bins. Optional age / gender are sent to the API when you enable tabular fusion in training (<code>model.tabular_dim</code>). Research / education only — not for diagnosis.</p>
 
     <div class="card">
       <label class="drop" id="dropZone">
@@ -124,6 +145,20 @@
         <div id="dropText">Click to choose a file or drag and drop here</div>
         <img id="preview" class="preview" alt="Preview" />
       </label>
+      <div class="row2">
+        <div>
+          <label class="field" for="ageInput">Age (optional)</label>
+          <input type="number" id="ageInput" min="0" max="120" step="1" placeholder="e.g. 45" />
+        </div>
+        <div>
+          <label class="field" for="genderSelect">Gender (optional)</label>
+          <select id="genderSelect">
+            <option value="">Unknown</option>
+            <option value="M">Male</option>
+            <option value="F">Female</option>
+          </select>
+        </div>
+      </div>
       <button type="button" id="btn" disabled>Run analysis</button>
       <div class="err" id="err"></div>
     </div>
@@ -134,8 +169,11 @@
         <span id="predClass"></span>
         <span class="pill" id="modelTag"></span>
       </div>
+      <p id="pneuLine" style="margin:.25rem 0 .75rem;font-size:.95rem;color:var(--muted);"></p>
       <h2 style="font-size:1rem;margin:0 0 .6rem;color:var(--muted);font-weight:500;">Class probabilities</h2>
       <div id="classBars"></div>
+      <h2 style="font-size:1rem;margin:1rem 0 .4rem;color:var(--muted);font-weight:500;">Viral vs bacterial (conditional, if model has both)</h2>
+      <div id="subtypeBars"></div>
       <h2 style="font-size:1rem;margin:1rem 0 .6rem;color:var(--muted);font-weight:500;">Severity</h2>
       <div id="sevBlock"></div>
       <p class="disclaimer" id="sevNote"></p>
@@ -154,6 +192,8 @@
     const btn = document.getElementById("btn");
     const err = document.getElementById("err");
     const resultCard = document.getElementById("resultCard");
+    const ageInput = document.getElementById("ageInput");
+    const genderSelect = document.getElementById("genderSelect");
     let currentFile = null;
 
     function setFile(file) {
@@ -203,6 +243,10 @@
 
       const fd = new FormData();
       fd.append("file", currentFile, currentFile.name);
+      const ageVal = ageInput.value.trim();
+      if (ageVal !== "") fd.append("age", ageVal);
+      const g = genderSelect.value;
+      if (g) fd.append("gender", g);
 
       try {
         const res = await fetch("/api/v1/predict", { method: "POST", body: fd });
@@ -220,10 +264,32 @@
             ? "Multi-task (class + severity)"
             : "Classification only (severity is approximate)";
 
+        const pneu = document.getElementById("pneuLine");
+        if (typeof data.pneumonia_probability === "number") {
+          pneu.textContent =
+            "Pneumonia-related probability (vs normal when available): " +
+            (data.pneumonia_probability * 100).toFixed(1) +
+            "%";
+        } else {
+          pneu.textContent = "";
+        }
+
         const probs = data.class_probabilities || {};
         document.getElementById("classBars").innerHTML = Object.entries(probs)
           .map(([k, v]) => barHtml(k, v))
           .join("");
+
+        const st = data.subtype || {};
+        const condV = st.p_viral_if_infection;
+        const condB = st.p_bacterial_if_infection;
+        const subtypeEl = document.getElementById("subtypeBars");
+        if (typeof condV === "number" && typeof condB === "number") {
+          subtypeEl.innerHTML =
+            barHtml("P(viral | infection)", condV) + barHtml("P(bacterial | infection)", condB);
+        } else {
+          subtypeEl.innerHTML =
+            "<p style='margin:0;color:var(--muted);font-size:.88rem;'>No viral/bacterial split from this model (e.g. only two infection folders, or missing class names).</p>";
+        }
 
         const sev = document.getElementById("sevBlock");
         const note = document.getElementById("sevNote");

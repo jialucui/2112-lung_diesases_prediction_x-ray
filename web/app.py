@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 import torch
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -28,12 +28,12 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def _resolve_config_yaml() -> str:
-    """Prefer configs/config.yaml at repo root; fallback to src/configs/config.yaml."""
-    for rel in ("configs/config.yaml", "src/configs/config.yaml"):
+    """Prefer src/configs/config.yaml; fallback to repo root configs/config.yaml."""
+    for rel in ("src/configs/config.yaml", "configs/config.yaml"):
         p = _REPO_ROOT / rel
         if p.is_file():
             return str(p)
-    return str(_REPO_ROOT / "configs/config.yaml")
+    return str(_REPO_ROOT / "src/configs/config.yaml")
 
 
 from src.inference.predictor import PneumoniaPredictor
@@ -81,6 +81,8 @@ class PredictionResult(BaseModel):
     predicted_class: str
     confidence: float
     class_probabilities: Dict[str, float]
+    pneumonia_probability: Optional[float] = None
+    subtype: Optional[Dict[str, float]] = None
     severity_estimated_percent: Optional[float] = None
     severity_bin_probabilities: Optional[Dict[str, float]] = None
     severity_interpretation: Optional[str] = None
@@ -96,12 +98,6 @@ class HealthCheckResponse(BaseModel):
     model_loaded: bool
     device: Optional[str] = None
     timestamp: str
-
-
-class ReportRequest(BaseModel):
-    """Report request (optional legacy)."""
-    image_path: str
-    include_details: bool = True
 
 
 # ============================================================================
@@ -167,8 +163,12 @@ def _allowed_image(file: UploadFile) -> bool:
 
 
 @app.post("/api/v1/predict", response_model=PredictionResult)
-async def predict(file: UploadFile = File(...)):
-    """Upload a chest image; returns class probabilities and severity fields (English copy)."""
+async def predict(
+    file: UploadFile = File(...),
+    age: Optional[float] = Form(None),
+    gender: Optional[str] = Form(None),
+):
+    """Upload a chest image; optional age/gender used when model.tabular_dim > 0."""
     if not model_loaded or predictor is None:
         raise HTTPException(status_code=503, detail=f"Model not loaded: {load_error}")
 
@@ -192,7 +192,7 @@ async def predict(file: UploadFile = File(...)):
             temp_image_path = tmp.name
 
         logger.info("Predict image: %s", file.filename)
-        prediction_result = predictor.predict(temp_image_path)
+        prediction_result = predictor.predict(temp_image_path, age=age, gender=gender)
         prediction_en = PneumoniaPredictor.result_for_english_ui(prediction_result)
 
         processing_time = (time.time() - start_time) * 1000
@@ -202,12 +202,16 @@ async def predict(file: UploadFile = File(...)):
 
         report_text = PneumoniaPredictor.format_report(prediction_en, language="en")
 
+        sub_raw = prediction_en.get("subtype") or {}
+        subtype_out = {k: float(v) for k, v in sub_raw.items()} if sub_raw else None
         result = PredictionResult(
             image_name=file.filename or "upload",
             model_type=prediction_en.get("model_type", ""),
             predicted_class=pred_class,
             confidence=confidence,
             class_probabilities={k: float(v) for k, v in probs.items()},
+            pneumonia_probability=prediction_en.get("pneumonia_probability"),
+            subtype=subtype_out,
             severity_estimated_percent=prediction_en.get("severity_estimated_percent"),
             severity_bin_probabilities=prediction_en.get("severity_bin_probabilities"),
             severity_interpretation=prediction_en.get("severity_interpretation"),
@@ -233,54 +237,6 @@ async def predict(file: UploadFile = File(...)):
                 pass
 
 
-@app.post("/api/v1/predict_batch")
-async def predict_batch(files: list[UploadFile] = File(...)):
-    """Batch predict (one temp file per image)."""
-    if not model_loaded or predictor is None:
-        raise HTTPException(status_code=503, detail=f"Model not loaded: {load_error}")
-
-    results: list[Any] = []
-    for uf in files:
-        try:
-            item = await predict(uf)
-            results.append(item.model_dump())
-        except HTTPException as e:
-            results.append({"image_name": uf.filename, "error": e.detail})
-
-    return {
-        "total": len(files),
-        "successful": sum(1 for r in results if "error" not in r),
-        "results": results,
-    }
-
-
-@app.get("/api/v1/report/{image_name}")
-async def get_report(image_name: str, include_details: bool = True):
-    """Generate report for an image path (must exist on server)."""
-    if not model_loaded or predictor is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-
-    try:
-        # 这里可以从缓存或数据库中获取之前的预测结果
-        # 或重新预测
-        prediction_result = predictor.predict(image_name)
-        prediction_en = PneumoniaPredictor.result_for_english_ui(prediction_result)
-        report = PneumoniaPredictor.format_report(prediction_en, language="en")
-        
-        return {
-            "image_name": image_name,
-            "report": report,
-            "raw_prediction": prediction_en if include_details else None,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Image not found: {image_name}") from None
-    except Exception as e:
-        logger.error("Report failed: %s", str(e))
-        raise HTTPException(status_code=500, detail=f"Report failed: {str(e)}") from e
-
-
 @app.get("/api/v1/info")
 async def get_info():
     """API and model metadata."""
@@ -296,8 +252,7 @@ async def get_info():
         },
         "endpoints": {
             "web_ui": "/ (GET) — browser upload UI",
-            "predict": "/api/v1/predict (POST)",
-            "predict_batch": "/api/v1/predict_batch (POST)",
+            "predict": "/api/v1/predict (POST, multipart: file, optional age, gender)",
             "health": "/api/v1/health (GET)",
             "info": "/api/v1/info (GET)",
             "docs": "/api/v1/docs (GET)",

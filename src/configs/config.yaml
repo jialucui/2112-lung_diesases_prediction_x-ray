@@ -1,15 +1,20 @@
 # Model Configuration
 model:
-  model_type: multi_task  # 'binary' 或 'multi_task'
+  model_type: multi_task  # multi_task: class + severity; binary: single-head only
   name: densenet121
-  num_classes: 3  # 肺炎类型数量
-  severity_classes: 5  # 严重程度分档
+  num_classes: 3
+  severity_classes: 5
   pretrained: true
+  # Tabular fusion: 0 = image-only. Use 3 for [age/100, male, female] (+ optional extras below).
+  tabular_dim: 0
 
 # Data Configuration
 data:
-  data_dir: pneumonia/  # 训练数据目录
-  csv_file: null  # CSV 文件（可选）
+  data_dir: pneumonia/
+  csv_file: null
+  # Optional CSV with columns: image_name (or filename), age, gender, severity, plus any numeric extras.
+  metadata_csv: null
+  tabular_extra_columns: []
   image_size: 224
   train_split: 0.7
   val_split: 0.15
@@ -17,6 +22,9 @@ data:
   augment_train: true
   num_workers: 4
   seed: 42
+  # auto: synthesize severity bins if not in CSV/metadata (needed for multi_task training).
+  severity_strategy: auto
+  synthetic_severity_by_class: null
 
 # Training Configuration
 training:
@@ -29,12 +37,11 @@ training:
   mixed_precision: true
   loss_weights:
     classification: 0.6
-    binary_classification: 0.6
     severity_prediction: 0.4
 
 # Evaluation Configuration
 evaluation:
-  eval_freq: 5  # 每 5 个 epoch 评估一次
+  eval_freq: 5
 
 # Paths
 paths:
@@ -49,4 +56,3 @@ inference:
     - Virus Pneumonia
     - Bacteria Pneumonia
   severity_bin_centers: [10, 30, 50, 70, 90]
-  
