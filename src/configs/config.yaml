@@ -10,7 +10,7 @@ model:
 
 # Data Configuration
 data:
-  data_dir: pneumonia/
+  data_dir: "folder_3"
   csv_file: null
   # Optional CSV with columns: image_name (or filename), age, gender, severity, plus any numeric extras.
   metadata_csv: null
