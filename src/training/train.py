@@ -11,6 +11,7 @@ Features:
 
 import os
 import sys
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -32,6 +33,23 @@ from src.evaluation.metrics import MetricsCalculator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _metrics_for_yaml(metrics: Dict) -> Dict:
+    """Convert numpy scalars/arrays so yaml.safe_dump does not fail."""
+
+    def convert(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, (np.floating, np.integer)):
+            return float(obj) if isinstance(obj, np.floating) else int(obj)
+        if isinstance(obj, dict):
+            return {str(k): convert(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [convert(v) for v in obj]
+        return obj
+
+    return convert(metrics)
 
 
 class PneumoniaTrainer:
@@ -237,14 +255,25 @@ class PneumoniaTrainer:
         metrics = self.metrics.calculate_metrics()
         return metrics
     
-    def train(self, train_loader: DataLoader, val_loader: DataLoader):
-        """Full training loop"""
+    def train(self, train_loader: DataLoader, val_loader: DataLoader, start_epoch: int = 0):
+        """Full training loop. start_epoch: resume index (0-based next epoch to run)."""
         num_epochs = self.config['training']['num_epochs']
         patience = self.config['training']['early_stopping_patience']
-        
-        logger.info(f"Starting training for {num_epochs} epochs...")
-        
-        for epoch in range(num_epochs):
+
+        if start_epoch >= num_epochs:
+            logger.info(
+                "start_epoch (%s) >= num_epochs (%s); skipping training loop.",
+                start_epoch,
+                num_epochs,
+            )
+            return
+
+        if start_epoch > 0:
+            logger.info("Resuming: epochs %s..%s", start_epoch + 1, num_epochs)
+        else:
+            logger.info(f"Starting training for {num_epochs} epochs...")
+
+        for epoch in range(start_epoch, num_epochs):
             train_metrics = self.train_epoch(train_loader, epoch)
             logger.info(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {train_metrics['loss']:.4f}")
             
@@ -267,17 +296,42 @@ class PneumoniaTrainer:
             self.scheduler.step()
         
         logger.info("✅ Training completed!")
-    
+
+    def load_checkpoint(self, path: Union[str, Path]) -> int:
+        """Load model/optimizer/scheduler (if present); return next epoch index to train."""
+        path = Path(path)
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(ckpt["model_state_dict"])
+        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        self.best_val_f1 = float(ckpt.get("best_val_f1", 0.0))
+
+        if "scheduler_state_dict" in ckpt:
+            self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        else:
+            saved = int(ckpt.get("epoch", -1))
+            for _ in range(saved + 1):
+                self.scheduler.step()
+
+        if self.use_mixed_precision and "scaler_state_dict" in ckpt:
+            self.scaler.load_state_dict(ckpt["scaler_state_dict"])
+
+        start = int(ckpt["epoch"]) + 1
+        logger.info("Resumed from %s; continuing from epoch %s", path, start + 1)
+        return start
+
     def _save_checkpoint(self, epoch: int, metrics: Dict):
         """Save model checkpoint"""
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
             'metrics': metrics,
             'best_val_f1': self.best_val_f1
         }
-        
+        if self.use_mixed_precision:
+            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
+
         checkpoint_path = self.checkpoint_dir / 'best_model.pth'
         torch.save(checkpoint, checkpoint_path)
         logger.info(f"Checkpoint saved to {checkpoint_path}")
@@ -297,6 +351,12 @@ def main():
         type=int,
         default=None,
         help='Override model.num_classes (must match number of class folders)',
+    )
+    parser.add_argument(
+        '--resume',
+        type=str,
+        default=None,
+        help='Path to .pth checkpoint (loads model/optimizer/scheduler; continues toward num_epochs)',
     )
     args = parser.parse_args()
 
@@ -344,8 +404,19 @@ def main():
         tabular_extra_columns=dcfg.get("tabular_extra_columns"),
         project_root=repo_root,
     )
-    
-    trainer.train(train_loader, val_loader)
+
+    start_epoch = 0
+    if args.resume:
+        ckpt_path = Path(args.resume)
+        if not ckpt_path.is_file():
+            alt = repo_root / args.resume
+            if alt.is_file():
+                ckpt_path = alt
+            else:
+                raise FileNotFoundError(f"Checkpoint not found: {args.resume}")
+        start_epoch = trainer.load_checkpoint(ckpt_path)
+
+    trainer.train(train_loader, val_loader, start_epoch=start_epoch)
 
     # Optional: evaluate on test split if present
     if test_loader is not None:
@@ -361,7 +432,7 @@ def main():
         out_dir = Path(trainer.config['paths'].get('output_dir', 'outputs/'))
         out_dir.mkdir(parents=True, exist_ok=True)
         with open(out_dir / 'test_metrics.yaml', 'w') as f:
-            yaml.safe_dump(test_metrics, f, sort_keys=False)
+            yaml.safe_dump(_metrics_for_yaml(test_metrics), f, sort_keys=False)
 
 
 if __name__ == '__main__':
