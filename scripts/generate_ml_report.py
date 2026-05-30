@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Generate metrics, curves, error analysis, and demo artifacts."""
+"""
+Generate metrics, curves, error analysis, and demo artifacts (result set B).
+
+Writes outputs/chest_xray_report/ using the current eval pipeline.
+Training-time test metrics remain in checkpoints/.../test_metrics.yaml (set A).
+See docs/EVALUATION_RESULTS.md.
+"""
 
 from __future__ import annotations
 

@@ -1,5 +1,9 @@
 # Lung X-ray ML Project — Technical Report
 
+> **Metrics & confusion matrices:** This report’s **Section 7** numbers are **training-time (result set A)**.  
+> Plots under `outputs/chest_xray_report/` and ROC **AUC 0.9773** are **current-pipeline (result set B)**.  
+> See **[EVALUATION_RESULTS.md](EVALUATION_RESULTS.md)** for a side-by-side reference (same checkpoint, different eval runs).
+
 ## 1. Classification goals completed
 
 | Dataset | Task | Status |
@@ -80,27 +84,57 @@ Chest X-ray JPG
 
 ## 7. Results (Chest_xray, test set, 624 images)
 
+**Checkpoint:** `checkpoints/chest_xray_stopped_epoch7/best_model.pth` (best validation F1 at epoch 5).
+
+### 7a. Training-time test eval (result set A — historical)
+
+Recorded when training ended (~2026-05-16) via `src/training/train.py` → `test_metrics.yaml` next to the checkpoint.
+
 | Metric | Value |
 |--------|-------|
 | **Accuracy** | **86.06%** |
 | **Precision** (macro) | 90.35% |
 | **Recall** (macro) | 81.58% |
 | **F1** | **89.92%** |
-| **ROC-AUC** | **95.69%** |
+| **ROC-AUC** | **0.9569** |
 | **Sensitivity** | 99.49% |
 | **Specificity** | 63.68% |
 
-**Confusion matrix (rows = true, columns = predicted; 0 = NORMAL, 1 = PNEUMONIA):**
+**Confusion matrix** (rows = true, columns = predicted; 0 = NORMAL, 1 = PNEUMONIA):
 
 |  | Pred NORMAL | Pred PNEUMONIA |
 |--|-------------|----------------|
-| **True NORMAL** | 149 | 85 |
-| **True PNEUMONIA** | 2 | 388 |
+| **True NORMAL** (234) | **149** (TN) | **85** (FP) |
+| **True PNEUMONIA** (390) | **2** (FN) | **388** (TP) |
 
-Validation set (16 images, epoch 5): Accuracy 87.5%, F1 0.889, AUC 0.969.
+File: `checkpoints/chest_xray_stopped_epoch7/test_metrics.yaml`
 
-Full metrics YAML: `checkpoints/chest_xray_stopped_epoch7/test_metrics.yaml`  
-Report directory: `outputs/chest_xray_report/` (run `scripts/generate_ml_report.py`)
+### 7b. Current pipeline re-eval (result set B — `outputs/chest_xray_report/`)
+
+Same weights, re-run with `scripts/generate_ml_report.py` and today’s preprocessing (`load_xray_rgb`, `dataset_norm_stats.json`).
+
+| Metric | Value |
+|--------|-------|
+| **Accuracy** | **91.99%** |
+| **F1** | **93.78%** |
+| **ROC-AUC** | **0.9773** |
+| **Sensitivity** | 96.67% |
+| **Specificity** | 84.19% |
+
+**Confusion matrix:**
+
+|  | Pred NORMAL | Pred PNEUMONIA |
+|--|-------------|----------------|
+| **True NORMAL** | **197** | **37** |
+| **True PNEUMONIA** | **13** | **377** |
+
+Files: `outputs/chest_xray_report/test_metrics.yaml`, `confusion_matrix.png`, `roc_curve.png`, `test_predictions.jsonl`
+
+**Do not mix:** ROC **0.9773** belongs to **7b**, not the **149/85/2/388** matrix in **7a**.
+
+### Validation (not test)
+
+Validation set (**16 images**, epoch 5): Accuracy 87.5%, F1 0.889, AUC 0.969 — `run_summary.yaml` → `val_metrics_at_best`.
 
 ---
 
@@ -114,13 +148,23 @@ Report directory: `outputs/chest_xray_report/` (run `scripts/generate_ml_report.
 
 ## 9. Error analysis
 
-| Pattern | Explanation |
-|---------|-------------|
-| **NORMAL → PNEUMONIA (85 cases)** | Main error; normals flagged as pneumonia—possible mild opacities, label noise, or class imbalance |
-| **PNEUMONIA → NORMAL (2 cases)** | Rare; high sensitivity for pneumonia |
-| **Low-confidence samples** | `confidence < 0.8` → manual review; often near 0.5–0.7 class probabilities |
+### Training-time (result set A)
 
-Detailed JSON: `outputs/chest_xray_report/error_analysis.json`  
+| Pattern | Count | Notes |
+|---------|-------|-------|
+| **NORMAL → PNEUMONIA** | **85** | Main error in CM 149/85/2/388 |
+| **PNEUMONIA → NORMAL** | **2** | Rare; high sensitivity |
+
+### Current re-eval (result set B)
+
+From `outputs/chest_xray_report/error_analysis.json` (same run as CM 197/37/13/377):
+
+| Pattern | Count | Notes |
+|---------|-------|-------|
+| **NORMAL → PNEUMONIA** | **37** | Most common mistake |
+| **PNEUMONIA → NORMAL** | **13** | |
+| **Low-confidence** (`confidence < 0.8`) | **32** | Manual review recommended |
+
 Per-image predictions: `outputs/chest_xray_report/test_predictions.jsonl`
 
 ---

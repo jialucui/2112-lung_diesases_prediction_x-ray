@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Regenerate confusion matrix PNG from metrics YAML or full test-set eval."""
+"""
+Plot confusion matrix PNG from test_metrics.yaml or full test-set eval.
+
+Default input: outputs/chest_xray_report/test_metrics.yaml (result set B).
+Training-time matrix 149/85/2/388 is in checkpoints/chest_xray_stopped_epoch7/test_metrics.yaml.
+See docs/EVALUATION_RESULTS.md.
+"""
 
 from __future__ import annotations
 

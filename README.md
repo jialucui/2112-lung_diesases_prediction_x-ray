@@ -10,6 +10,7 @@ Assistive chest X-ray analysis built on **DenseNet121**: **multi-task learning**
 
 - [Features](#features)
 - [Deployed model](#deployed-model)
+- [Test metrics: two result sets](#test-metrics-two-result-sets)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Model and data setup](#model-and-data-setup)
@@ -53,9 +54,57 @@ Default inference uses **Chest X-ray binary** classification (NORMAL vs PNEUMONI
 | Input | 224×224 RGB |
 | Tabular | **Off** (`tabular_dim: 0`) |
 
-**Test set (624 images, reference):** Accuracy 86.06%, F1 89.92%, ROC-AUC 95.69%. See `docs/ML_PROJECT_REPORT.md` or `checkpoints/chest_xray_stopped_epoch7/test_metrics.yaml`.
-
 Other setups (`folder_3` three-class, viral/bacterial, etc.) require training with the matching config and checkpoint.
+
+---
+
+## Test metrics: two result sets
+
+The **same checkpoint** (`checkpoints/chest_xray_stopped_epoch7/best_model.pth`, best val F1 at **epoch 5**) was evaluated on the **624-image test split** twice. Numbers differ because **training-time eval (2026-05-16)** used an older preprocessing path; **current scripts** use the aligned inference pipeline.
+
+Full reference: **[docs/EVALUATION_RESULTS.md](docs/EVALUATION_RESULTS.md)**.
+
+### A — Training-time test eval (historical)
+
+Saved when training finished. Source: `checkpoints/chest_xray_stopped_epoch7/test_metrics.yaml`.
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | 86.06% |
+| F1 | 89.92% |
+| ROC-AUC | **0.9569** |
+
+**Confusion matrix** (rows = true, cols = predicted; 0=NORMAL, 1=PNEUMONIA):
+
+|  | Pred NORMAL | Pred PNEUMONIA |
+|--|-------------|----------------|
+| True NORMAL | **149** | **85** |
+| True PNEUMONIA | **2** | **388** |
+
+### B — Current pipeline re-eval (figures in `outputs/chest_xray_report/`)
+
+Regenerate: `python scripts/generate_ml_report.py`. Source: `outputs/chest_xray_report/test_metrics.yaml`.
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | 91.99% |
+| F1 | 93.78% |
+| ROC-AUC | **0.9773** |
+
+**Confusion matrix:**
+
+|  | Pred NORMAL | Pred PNEUMONIA |
+|--|-------------|----------------|
+| True NORMAL | **197** | **37** |
+| True PNEUMONIA | **13** | **377** |
+
+| Artifact | Result set | Checkpoint |
+|----------|------------|------------|
+| `confusion_matrix.png` | **B** | `.../chest_xray_stopped_epoch7/best_model.pth` |
+| `roc_curve.png` | **B** (AUC 0.9773) | same |
+| `test_predictions.jsonl` | **B** | same |
+
+**Do not mix** set A’s matrix (149/85/2/388) with set B’s ROC (0.9773).
 
 ---
 
@@ -297,19 +346,25 @@ gc = predictor.grad_cam("path/to/image.jpeg")
 
 ## Evaluation scripts
 
-Run from the **repository root**.
+Run from the **repository root**. Default checkpoint: `checkpoints/chest_xray_stopped_epoch7/best_model.pth`.  
+Outputs under `outputs/chest_xray_report/` are **result set B** (see [Test metrics: two result sets](#test-metrics-two-result-sets)).
 
 ### Full ML report
 
 ```bash
-python scripts/generate_ml_report.py
+python scripts/generate_ml_report.py \
+  --config src/configs/config_chest_xray.yaml \
+  --checkpoint checkpoints/chest_xray_stopped_epoch7/best_model.pth
 ```
 
 Writes to `outputs/chest_xray_report/` by default:
 
-- `test_metrics.yaml`, `confusion_matrix.png`, `error_analysis.json`  
-- `test_predictions.jsonl`, training curves (with `--training-log`)  
-- `demo/` sample input and prediction JSON  
+- `test_metrics.yaml` — accuracy, F1, AUC, confusion matrix (**B**)  
+- `confusion_matrix.png` — plotted from that YAML  
+- `roc_curve.png` — if generated via `plot_roc_curve.py`  
+- `test_predictions.jsonl` — per-image probs (source of truth for ROC)  
+- `error_analysis.json`, `report_summary.json`  
+- `demo/` sample input and prediction JSON (optional)  
 
 ### Loss curves only
 
@@ -322,8 +377,23 @@ python scripts/plot_loss_curves.py \
 ### Confusion matrix
 
 ```bash
+# Plot from existing outputs/chest_xray_report/test_metrics.yaml (result set B)
 python scripts/plot_confusion_matrix.py
-python scripts/plot_confusion_matrix.py --reeval   # re-run test inference
+
+# Re-run test inference, then plot (refreshes result set B)
+python scripts/plot_confusion_matrix.py --reeval
+```
+
+Training-time matrix (**149/85/2/388**) is only in `checkpoints/chest_xray_stopped_epoch7/test_metrics.yaml` (result set A).
+
+### ROC curve
+
+```bash
+# From test_predictions.jsonl (result set B, AUC matches test_metrics.yaml)
+python scripts/plot_roc_curve.py
+
+# Re-run inference first
+python scripts/plot_roc_curve.py --reeval
 ```
 
 ### Grad-CAM (single image)
@@ -451,7 +521,8 @@ Chest val set is small (16 images); rely on **test** metrics (624 images).
 
 ## Further reading
 
-- **[docs/ML_PROJECT_REPORT.md](docs/ML_PROJECT_REPORT.md)** — workflow, hyperparameters, confusion matrix, error analysis  
+- **[docs/EVALUATION_RESULTS.md](docs/EVALUATION_RESULTS.md)** — which checkpoint, which CM, which AUC (sets A vs B)  
+- **[docs/ML_PROJECT_REPORT.md](docs/ML_PROJECT_REPORT.md)** — workflow, hyperparameters, training-time results  
 - **Repository:** https://github.com/jialucui/2112-lung_diesases_prediction_x-ray  
 
 ---
