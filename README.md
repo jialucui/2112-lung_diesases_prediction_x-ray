@@ -1,70 +1,75 @@
-# 2112-lung_diesases_prediction_x-ray
+# Lung disease prediction (chest X-ray)
 
-## 如何用你本地 `pneumonia/` 文件夹训练
+Multi-task DenseNet for chest X-ray classification (and optional severity). Includes training, CLI inference, evaluation scripts, and a FastAPI web UI with Grad-CAM.
 
-你的数据结构是：
-
-```
-pneumonia/
-  Train_viruspneumonia_2112/
-    *.jpg / *.png / *.dcm ...
-  Train_bacteriapneumonia_2112/
-    *.jpg / *.png / *.dcm ...
-```
-
-这属于**两分类**（病毒性 vs 细菌性）。本项目已改为支持“**直接读取子文件夹作为类别**”，不需要 CSV。
-
-### Step 0：把数据放到项目旁边（推荐）
-
-把 `pneumonia/` 放在项目根目录下（和 `src/`、`configs/` 同级）。
-
-如果你不想放在项目里，也可以放任意位置，后面在 `configs/config.yaml` 里改 `data.data_dir` 为绝对路径即可。
-
-### Step 1：创建环境并安装依赖
-
-在项目根目录执行：
+## Quick start
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-（macOS + Apple Silicon 如果安装某些包报错，建议先升级 pip：`pip install -U pip` 再装依赖。）
+Install PyTorch separately for your platform if needed: https://pytorch.org/get-started/locally/
 
-### Step 2：配置数据路径
-
-打开 `configs/config.yaml`，找到：
-
-- `data.data_dir`: 改成你的 `pneumonia` 路径（相对或绝对都行）
-- `data.csv_file`: 保持 `null`（表示走“文件夹扫描”模式）
-
-默认配置已经是：
-
-- `model.model_type: binary`
-- `model.name: densenet121`
-
-### Step 3：开始训练
-
-在项目根目录执行：
+### Web UI
 
 ```bash
-python -m src.training.train --config configs/config.yaml --device cpu
+python run.py
+# or: uvicorn web.app:app --host 0.0.0.0 --port 8000
 ```
 
-如果你有 NVIDIA GPU（CUDA 可用）：
+Open http://localhost:8000 — upload a chest X-ray for class probabilities, severity estimate, and Grad-CAM overlay.
+
+Environment variables (optional):
+
+| Variable | Purpose |
+|----------|---------|
+| `LUNG_XRAY_CONFIG` | Override config YAML path |
+| `LUNG_XRAY_CHECKPOINT` | Override `.pth` checkpoint |
+| `LUNG_XRAY_NO_DATASET_NORM=1` | Force ImageNet normalization |
+
+Defaults use `src/configs/config_chest_xray.yaml` and `checkpoints/chest_xray_stopped_epoch7/best_model.pth` when present.
+
+### CLI
 
 ```bash
-python -m src.training.train --config configs/config.yaml --device cuda
+python detect.py Chest_xray_data1/chest_xray/test/NORMAL/IM-0031-0001.jpeg
+python detect.py image.jpg --json
 ```
 
-训练输出：
+### Training (folder_3, 3-class NIH-style layout)
 
-- 最佳模型会保存到 `checkpoints/best_model.pth`
-- 日志会输出到控制台（后续可扩展到 TensorBoard）
+```bash
+python -m src.training.train --config src/configs/config.yaml --device cpu
+```
 
-### Step 4：常见问题
+Edit `src/configs/config.yaml` for `data.data_dir`, `metadata_csv`, and model settings.
 
-- **我只有两个文件夹，没有 Normal 类**：没问题，本项目会把两个子文件夹当成两类来训练（病毒 vs 细菌）。
-- **我有更多类别**：也可以，只要 `data_dir/` 下有多个子文件夹，都会被当作类别（按文件夹名排序映射到 0..N-1）。
-- **图片不止 jpg/png**：支持 `jpg/jpeg/png/dcm/bmp/tif/tiff/webp`。
+### Training / inference (2-class Chest_xray_data1)
+
+```bash
+python -m src.training.train --config src/configs/config_chest_xray.yaml --device cpu
+```
+
+## Project layout
+
+| Path | Description |
+|------|-------------|
+| `src/configs/` | Training & inference YAML |
+| `src/training/train.py` | Training loop |
+| `src/inference/predictor.py` | Model loading & prediction |
+| `web/app.py` | FastAPI + static UI |
+| `detect.py` | CLI wrapper |
+| `scripts/` | Loss curves, confusion matrix, ML report, Grad-CAM |
+| `docs/ML_PROJECT_REPORT.md` | Project report |
+
+`logs/`, `outputs/`, and `checkpoints/` are gitignored (keep checkpoints locally for the web app).
+
+## Data layouts
+
+**Two folders as classes** (virus vs bacteria, or NORMAL vs PNEUMONIA): set `data.csv_file: null` and point `data.data_dir` at the parent folder with one subfolder per class.
+
+**NIH CSV + images**: use `metadata_csv` and `data_dir` as in `src/configs/config.yaml` (`folder_3`).
+
+Supported image types: `jpg`, `jpeg`, `png`, `dcm`, `bmp`, `tif`, `tiff`, `webp`.

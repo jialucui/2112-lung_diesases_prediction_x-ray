@@ -11,7 +11,7 @@ setup(
     description='Medical image analysis for pneumonia detection from chest X-rays using deep learning',
     long_description=long_description,
     long_description_content_type='text/markdown',
-    url='https://github.com/jialucui/2112-Enviromental-prediction',
+    url='https://github.com/jialucui/2112-lung_diesases_prediction_x-ray',
     packages=find_packages(),
     classifiers=[
         'Programming Language :: Python :: 3',

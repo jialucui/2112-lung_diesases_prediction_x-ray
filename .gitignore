@@ -73,6 +73,12 @@ logs/
 outputs/
 runs/
 tensorboard/
+*.pid
+
+# Local scratch / debug artifacts
+cols.txt
+**/training_history_merged.json
+**/training_history_from_log.json
 
 # Environment variables
 .env

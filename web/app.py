@@ -11,9 +11,10 @@ import os
 import sys
 import tempfile
 import time
+import yaml
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import torch
 import uvicorn
@@ -26,27 +27,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-
-def _resolve_config_yaml() -> str:
-    """Config path: env LUNG_XRAY_CONFIG, else chest deploy config, else default."""
-    env_cfg = os.environ.get("LUNG_XRAY_CONFIG")
-    if env_cfg:
-        p = Path(env_cfg)
-        if not p.is_absolute():
-            p = _REPO_ROOT / env_cfg
-        if p.is_file():
-            return str(p)
-    for rel in (
-        "src/configs/config_chest_xray.yaml",
-        "src/configs/config.yaml",
-        "configs/config.yaml",
-    ):
-        p = _REPO_ROOT / rel
-        if p.is_file():
-            return str(p)
-    return str(_REPO_ROOT / "src/configs/config_chest_xray.yaml")
-
-
+from src.inference.config_paths import default_checkpoint_path, resolve_config_path
 from src.inference.predictor import PneumoniaPredictor
 
 # Configure logging
@@ -131,10 +112,10 @@ async def startup_event():
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info("Device: %s", device)
 
-        ckpt = os.environ.get(
-            "LUNG_XRAY_CHECKPOINT",
-            "checkpoints/chest_xray_stopped_epoch7/best_model.pth",
-        )
+        config_path = resolve_config_path(_REPO_ROOT)
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        ckpt = default_checkpoint_path(_REPO_ROOT, config)
         # LUNG_XRAY_NO_DATASET_NORM=1 forces ImageNet stats (overconfident on this model).
         use_ds_norm = os.environ.get("LUNG_XRAY_NO_DATASET_NORM", "").lower() not in (
             "1",
@@ -142,8 +123,8 @@ async def startup_event():
             "yes",
         )
         predictor = PneumoniaPredictor.from_config_file(
-            config_path=_resolve_config_yaml(),
-            checkpoint_path=ckpt,
+            config_path=str(config_path),
+            checkpoint_path=str(ckpt),
             device=device,
             use_dataset_normalization=use_ds_norm,
         )
