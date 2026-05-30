@@ -522,6 +522,7 @@ Chest val set is small (16 images); rely on **test** metrics (624 images).
 ## Further reading
 
 - **[docs/EVALUATION_RESULTS.md](docs/EVALUATION_RESULTS.md)** — which checkpoint, which CM, which AUC (sets A vs B)  
+- **[docs/METHODOLOGY_QA.md](docs/METHODOLOGY_QA.md)** — dataset size (5856), test 624 source, patient leakage, threshold 0.8, early stopping  
 - **[docs/ML_PROJECT_REPORT.md](docs/ML_PROJECT_REPORT.md)** — workflow, hyperparameters, training-time results  
 - **Repository:** https://github.com/jialucui/2112-lung_diesases_prediction_x-ray  
 
