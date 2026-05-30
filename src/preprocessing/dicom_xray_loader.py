@@ -184,9 +184,10 @@ def _parse_gender_one_hot(raw: Any) -> Tuple[float, float]:
     if raw is None or (isinstance(raw, float) and np.isnan(raw)):
         return 0.0, 0.0
     s = str(raw).strip().lower()
-    if s in ("m", "male", "1", "男"):
+    # Accept common gender tokens (including non-English CSV values)
+    if s in ("m", "male", "1", "\u7537"):
         return 1.0, 0.0
-    if s in ("f", "female", "0", "女"):
+    if s in ("f", "female", "0", "\u5973"):
         return 0.0, 1.0
     return 0.0, 0.0
 

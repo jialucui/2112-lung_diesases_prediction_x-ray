@@ -14,7 +14,7 @@ import time
 import yaml
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import torch
 import uvicorn
@@ -38,7 +38,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# 初始化应用和模型
+# Application and model
 # ============================================================================
 app = FastAPI(
     title="Lung X-ray assistive API",
@@ -62,7 +62,7 @@ model_loaded: bool = False
 load_error: Optional[str] = None
 
 # ============================================================================
-# 数据模型
+# Request/response models
 # ============================================================================
 
 class PredictionResult(BaseModel):
@@ -99,7 +99,7 @@ class HealthCheckResponse(BaseModel):
 
 
 # ============================================================================
-# 启动和关闭事件
+# Startup / shutdown
 # ============================================================================
 
 @app.on_event("startup")
@@ -148,7 +148,7 @@ async def shutdown_event():
 
 
 # ============================================================================
-# API 端点
+# API routes
 # ============================================================================
 
 @app.get("/api/v1/health", response_model=HealthCheckResponse)
@@ -314,7 +314,7 @@ async def root():
 
 
 # ============================================================================
-# 错误处理
+# Error handlers
 # ============================================================================
 
 @app.exception_handler(HTTPException)
@@ -346,7 +346,7 @@ async def general_exception_handler(request, exc):
 
 
 # ============================================================================
-# 主入口
+# Main entry
 # ============================================================================
 
 if __name__ == "__main__":

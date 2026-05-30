@@ -1,4 +1,4 @@
-"""命令行入口：直接传入一张或多张图片路径即可检测。"""
+"""CLI entry: pass one or more image paths for chest X-ray inference."""
 
 from __future__ import annotations
 

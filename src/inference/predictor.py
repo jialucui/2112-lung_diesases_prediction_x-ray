@@ -82,10 +82,10 @@ class PneumoniaPredictor:
         else:
             self.class_names = [f"class_{i}" for i in range(self.num_classes)]
 
-        self._normal_idx: Optional[int] = _find_class_index(self.class_names, "normal", "正常")
-        self._virus_idx: Optional[int] = _find_class_index(self.class_names, "virus", "病毒")
+        self._normal_idx: Optional[int] = _find_class_index(self.class_names, "normal")
+        self._virus_idx: Optional[int] = _find_class_index(self.class_names, "virus")
         self._bacteria_idx: Optional[int] = _find_class_index(
-            self.class_names, "bacteria", "细菌", "bacterium"
+            self.class_names, "bacteria", "bacterium"
         )
 
         centers = inf.get("severity_bin_centers")
@@ -372,10 +372,13 @@ class PneumoniaPredictor:
         }
 
     def _severity_text(self, sev_prob: np.ndarray, pred_bin: int) -> str:
-        tier = ["很轻", "较轻", "中等", "较重", "很重"]
-        base = tier[pred_bin] if pred_bin < len(tier) else f"档位{pred_bin}"
+        tier = ["minimal", "mild", "moderate", "severe", "critical"]
+        base = tier[pred_bin] if pred_bin < len(tier) else f"bin_{pred_bin}"
         pct = float(sev_prob @ self.severity_bin_centers)
-        return f"综合估计严重程度约 {pct:.1f}%（{base}，该档置信度 {float(sev_prob[pred_bin]):.1%}）"
+        return (
+            f"Estimated overall severity ~{pct:.1f}% "
+            f"({base}; bin confidence {float(sev_prob[pred_bin]):.1%})"
+        )
 
     @staticmethod
     def result_for_english_ui(result: Dict[str, Any]) -> Dict[str, Any]:
@@ -405,51 +408,9 @@ class PneumoniaPredictor:
         return r
 
     @staticmethod
-    def format_report(result: Dict[str, Any], language: str = "zh") -> str:
-        if language.lower().startswith("en"):
-            return PneumoniaPredictor._format_report_en(result)
-        lines = [
-            "=" * 52,
-            "胸部 X 线辅助分析（研究用途，不能替代医生诊断）",
-            "=" * 52,
-            f"图像: {result.get('image_path', '')}",
-            "",
-            "【肺炎（相对正常）总体可能性】",
-        ]
-        if "pneumonia_probability" in result:
-            lines.append(f"  → P(肺炎相关) ≈ {float(result['pneumonia_probability']) * 100:.1f}%")
-        lines.extend(["", "【分型概率】"])
-        for k, v in result.get("class_probabilities", {}).items():
-            lines.append(f"  · {k}: {float(v):.2%}")
-        lines.append(f"  → 模型倾向类别: {result.get('predicted_class', '')}")
-        
-        if "confidence_score" in result:
-            lines.append(f"  → 置信度得分: {result['confidence_score']:.2%}")
-        if result.get("needs_manual_review"):
-            lines.append("  ⚠️ 注意: 模型置信度较低，建议人工复核！")
-            
-        sub = result.get("subtype") or {}
-        if sub:
-            lines.append("")
-            lines.append("【病毒/细菌相对倾向（原始与条件概率）】")
-            for k, v in sub.items():
-                lines.append(f"  · {k}: {float(v):.4f}")
-        if result.get("model_type") == "binary" and "severity_estimated_percent" in result:
-            lines.append("【严重程度（粗略）】")
-            lines.append(f"  → 估计严重度约 {result.get('severity_estimated_percent')}%")
-            lines.append(f"  · {result.get('severity_note', '')}")
-
-        if result.get("model_type") == "multi_task":
-            lines.append("【严重程度（分档）】")
-            for k, v in (result.get("severity_bin_probabilities") or {}).items():
-                lines.append(f"  · {k}: {float(v):.2%}")
-            lines.append(
-                f"  → 综合估计严重度: 约 {result.get('severity_estimated_percent', 0)}% "
-                f"（加权于各档代表百分比）"
-            )
-            lines.append(f"  · {result.get('severity_interpretation', '')}")
-        lines.append("=" * 52)
-        return "\n".join(lines)
+    def format_report(result: Dict[str, Any], language: str = "en") -> str:
+        """Format a human-readable report (English). `language` is kept for API compatibility."""
+        return PneumoniaPredictor._format_report_en(result)
 
     @staticmethod
     def _format_report_en(result: Dict[str, Any]) -> str:

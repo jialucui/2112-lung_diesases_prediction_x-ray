@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-项目根目录一键检测入口（最短命令）:
-  python detect.py yihan.jpg
+Root-level shortcut for CLI inference:
+  python detect.py image.jpg
   python detect.py a.jpg b.jpg --json
 """
 
