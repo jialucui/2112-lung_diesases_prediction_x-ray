@@ -94,14 +94,14 @@ class PneumoniaPredictor:
         else:
             self.severity_bin_centers = np.linspace(10.0, 90.0, self.severity_classes).astype(np.float32)
 
-        image_size = int(dcfg.get("image_size", 224))
+        self.image_size = int(dcfg.get("image_size", 224))
         if mean is None or std is None:
             mean = np.array([0.485, 0.456, 0.406])
             std = np.array([0.229, 0.224, 0.225])
 
+        # Match XrayDataset eval: cv2 load/resize, then ToTensor + Normalize (no PIL resize).
         self.transform = transforms.Compose(
             [
-                transforms.Resize((image_size, image_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean.tolist(), std=std.tolist()),
             ]
@@ -128,7 +128,7 @@ class PneumoniaPredictor:
         use_dataset_normalization: bool = True,
     ) -> "PneumoniaPredictor":
         from src.models.medical_models import BinaryClassifier, create_model
-        from src.preprocessing.dicom_xray_loader import get_image_statistics
+        from src.preprocessing.dicom_xray_loader import resolve_norm_stats
 
         config_path = _resolve_path(PROJECT_ROOT, config_path)
         with open(config_path, encoding="utf-8") as f:
@@ -142,12 +142,12 @@ class PneumoniaPredictor:
         if checkpoint_path:
             ck_path = _resolve_path(PROJECT_ROOT, checkpoint_path)
 
-        mean = std = None
-        data_dir = config.get("data", {}).get("data_dir")
-        if use_dataset_normalization and data_dir:
-            dp = _resolve_path(PROJECT_ROOT, data_dir)
-            if dp.is_dir():
-                mean, std = get_image_statistics(str(dp))
+        mean, std = resolve_norm_stats(
+            PROJECT_ROOT,
+            config,
+            ck_path,
+            use_dataset_normalization=use_dataset_normalization,
+        )
 
         model = create_model(
             model_type=m["model_type"],
@@ -192,8 +192,10 @@ class PneumoniaPredictor:
         return cls(config, model, device, checkpoint_path=None, mean=mean, std=std)
 
     def _tensor_from_image_path(self, image_path: Path) -> torch.Tensor:
-        image = Image.open(image_path).convert("RGB")
-        return self.transform(image)
+        from src.preprocessing.dicom_xray_loader import load_xray_rgb
+
+        rgb = load_xray_rgb(image_path, self.image_size)
+        return self.transform(Image.fromarray(rgb))
 
     def _tabular_batch(
         self,
@@ -223,6 +225,7 @@ class PneumoniaPredictor:
         age: Optional[float] = None,
         gender: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None,
+        confidence_threshold: float = 0.8,
     ) -> Dict[str, Any]:
         path = Path(image_path).expanduser()
         if not path.is_file():
@@ -230,7 +233,51 @@ class PneumoniaPredictor:
 
         batch = self._tensor_from_image_path(path).unsqueeze(0).to(self.device)
         tab = self._tabular_batch(batch.shape[0], age, gender, extra)
-        return self._forward_batch(batch, str(path), tabular=tab)
+        return self._forward_batch(batch, str(path), tabular=tab, confidence_threshold=confidence_threshold)
+
+    def grad_cam(
+        self,
+        image_path: Union[str, Path],
+        target_class_index: Optional[int] = None,
+        age: Optional[float] = None,
+        gender: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Grad-CAM overlay for the predicted (or specified) class."""
+        from src.inference.grad_cam import grad_cam_visualization
+        from src.preprocessing.dicom_xray_loader import load_xray_rgb
+
+        path = Path(image_path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"Image not found: {path}")
+
+        rgb = load_xray_rgb(path, self.image_size)
+        batch = self._tensor_from_image_path(path).unsqueeze(0).to(self.device)
+        tab = self._tabular_batch(batch.shape[0], age, gender, extra)
+
+        if target_class_index is None:
+            with torch.no_grad():
+                if self.model_type == "binary":
+                    logits = self.model(batch)
+                else:
+                    logits, _ = self.model(batch, tab)
+                target_class_index = int(torch.argmax(logits, dim=1).item())
+
+        _, data_url = grad_cam_visualization(
+            self.model,
+            self.model_type,
+            batch,
+            rgb,
+            int(target_class_index),
+            tabular=tab,
+        )
+        idx = int(target_class_index)
+        class_name = self.class_names[idx] if idx < len(self.class_names) else str(idx)
+        return {
+            "target_class_index": idx,
+            "target_class": class_name,
+            "grad_cam_image": data_url,
+        }
 
     def _pneumonia_and_subtype(self, probs: np.ndarray) -> Tuple[float, Dict[str, float]]:
         """probs shape (C,) sums to 1."""
@@ -260,12 +307,15 @@ class PneumoniaPredictor:
         batch: torch.Tensor,
         path_label: str,
         tabular: Optional[torch.Tensor] = None,
+        confidence_threshold: float = 0.8,
     ) -> Dict[str, Any]:
         if self.model_type == "binary":
             logits = self.model(batch)
             probs = torch.softmax(logits, dim=1)
             pred_idx = int(torch.argmax(probs, dim=1).item())
             p = probs[0].detach().cpu().numpy()
+            max_prob = float(p[pred_idx])
+            needs_manual_review = max_prob < confidence_threshold
             p_pneu, subtype = self._pneumonia_and_subtype(p)
             if self._normal_idx is not None and self._normal_idx < len(p):
                 rough_sev = float((1.0 - p[self._normal_idx]) * 90.0)
@@ -277,6 +327,8 @@ class PneumoniaPredictor:
                 "class_probabilities": {self.class_names[i]: float(p[i]) for i in range(len(p))},
                 "predicted_class_index": pred_idx,
                 "predicted_class": self.class_names[pred_idx] if pred_idx < len(self.class_names) else str(pred_idx),
+                "confidence_score": round(max_prob, 4),
+                "needs_manual_review": needs_manual_review,
                 "pneumonia_probability": round(p_pneu, 4),
                 "subtype": {k: round(float(v), 4) for k, v in subtype.items()},
                 "severity_estimated_percent": round(rough_sev, 1),
@@ -292,6 +344,9 @@ class PneumoniaPredictor:
         pred_s = int(torch.argmax(sev_probs, dim=1).item())
 
         p = class_probs[0].detach().cpu().numpy()
+        max_prob = float(p[pred_c])
+        needs_manual_review = max_prob < confidence_threshold
+        
         p_pneu, subtype = self._pneumonia_and_subtype(p)
         sev_pct = float((sev_probs.cpu().numpy() @ self.severity_bin_centers).item())
 
@@ -306,6 +361,8 @@ class PneumoniaPredictor:
             "class_probabilities": {self.class_names[i]: float(class_probs[0, i].item()) for i in range(class_probs.shape[1])},
             "predicted_class_index": pred_c,
             "predicted_class": self.class_names[pred_c] if pred_c < len(self.class_names) else str(pred_c),
+            "confidence_score": round(max_prob, 4),
+            "needs_manual_review": needs_manual_review,
             "pneumonia_probability": round(p_pneu, 4),
             "subtype": {k: round(float(v), 4) for k, v in subtype.items()},
             "severity_bin_probabilities": {sev_labels[i]: float(sev_probs[0, i].item()) for i in range(sev_probs.shape[1])},
@@ -365,6 +422,12 @@ class PneumoniaPredictor:
         for k, v in result.get("class_probabilities", {}).items():
             lines.append(f"  · {k}: {float(v):.2%}")
         lines.append(f"  → 模型倾向类别: {result.get('predicted_class', '')}")
+        
+        if "confidence_score" in result:
+            lines.append(f"  → 置信度得分: {result['confidence_score']:.2%}")
+        if result.get("needs_manual_review"):
+            lines.append("  ⚠️ 注意: 模型置信度较低，建议人工复核！")
+            
         sub = result.get("subtype") or {}
         if sub:
             lines.append("")
@@ -404,6 +467,12 @@ class PneumoniaPredictor:
         for k, v in result.get("class_probabilities", {}).items():
             lines.append(f"  · {k}: {float(v):.2%}")
         lines.append(f"  → Predicted class: {result.get('predicted_class', '')}")
+        
+        if "confidence_score" in result:
+            lines.append(f"  → Confidence score: {result['confidence_score']:.2%}")
+        if result.get("needs_manual_review"):
+            lines.append("  ⚠️ WARNING: Low confidence, manual review recommended!")
+            
         sub = result.get("subtype") or {}
         if sub:
             lines.append("")

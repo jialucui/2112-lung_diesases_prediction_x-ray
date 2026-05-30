@@ -3,185 +3,563 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Chest X-ray — pneumonia, subtype & severity (assistive)</title>
+  <title>Chest X-ray Analysis</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #0f1419;
-      --card: #1a2332;
-      --text: #e7ecf3;
-      --muted: #8b9cb3;
-      --accent: #3d9dff;
-      --ok: #3ecf8e;
-      --warn: #f5a623;
+      --bg: #070b12;
+      --surface: #111827;
+      --surface-2: #1a2438;
+      --border: rgba(148, 163, 184, 0.12);
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #6366f1;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --radius: 16px;
+      --shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
     }
+
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
-      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-      background: radial-gradient(ellipse 120% 80% at 50% -20%, #1a2a44, var(--bg));
+      font-family: "DM Sans", system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(56, 189, 248, 0.14), transparent 55%),
+        radial-gradient(ellipse 60% 40% at 100% 0%, rgba(99, 102, 241, 0.1), transparent 50%),
+        var(--bg);
       color: var(--text);
       min-height: 100vh;
-      padding: 2rem 1rem 4rem;
+      line-height: 1.5;
     }
-    .wrap { max-width: 720px; margin: 0 auto; }
-    h1 { font-size: 1.35rem; font-weight: 600; margin-bottom: 0.35rem; }
-    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; line-height: 1.5; }
-    .card {
-      background: var(--card);
+
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 52px;
+      height: 52px;
       border-radius: 14px;
-      padding: 1.25rem 1.35rem;
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(99, 102, 241, 0.25));
+      border: 1px solid var(--border);
       margin-bottom: 1rem;
-      border: 1px solid rgba(255,255,255,.06);
-      box-shadow: 0 12px 40px rgba(0,0,0,.35);
+      font-size: 1.5rem;
     }
+
+    h1 {
+      font-size: clamp(1.5rem, 4vw, 1.85rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.5rem;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 0.95rem;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .sub code {
+      font-size: 0.82em;
+      padding: 0.15em 0.4em;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.25rem;
+    }
+
+    @media (min-width: 900px) {
+      .grid { grid-template-columns: 1fr 1fr; align-items: start; }
+      .grid .result-panel { position: sticky; top: 1.5rem; }
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--surface-2) 0%, var(--surface) 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.35rem 1.5rem;
+      box-shadow: var(--shadow);
+    }
+
+    .card-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin: 0 0 1rem;
+    }
+
     .drop {
-      border: 2px dashed rgba(61,157,255,.45);
-      border-radius: 12px;
-      padding: 2rem 1rem;
+      display: block;
+      border: 2px dashed rgba(56, 189, 248, 0.35);
+      border-radius: 14px;
+      padding: 1.5rem 1rem;
       text-align: center;
       cursor: pointer;
-      transition: border-color .2s, background .2s;
+      transition: border-color 0.2s, background 0.2s, transform 0.15s;
+      background: rgba(0, 0, 0, 0.2);
     }
-    .drop:hover, .drop.dragover {
+
+    .drop:hover,
+    .drop.dragover {
       border-color: var(--accent);
-      background: rgba(61,157,255,.06);
+      background: rgba(56, 189, 248, 0.06);
     }
+
     .drop input { display: none; }
-    .preview {
-      margin-top: 1rem;
-      max-width: 100%;
-      max-height: 240px;
-      border-radius: 8px;
+
+    .drop-icon {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 0.75rem;
+      border-radius: 12px;
+      background: rgba(56, 189, 248, 0.12);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+    }
+
+    .drop-icon svg { width: 24px; height: 24px; }
+
+    #dropText {
+      font-size: 0.95rem;
+      color: var(--muted);
+    }
+
+    #dropText strong { color: var(--text); font-weight: 600; }
+
+    /* Preview: preserve aspect ratio, no stretch */
+    .preview-wrap {
       display: none;
-    }
-    .preview.show { display: block; margin-left: auto; margin-right: auto; }
-    button {
-      margin-top: 1rem;
-      width: 100%;
-      padding: 0.85rem 1rem;
-      font-size: 1rem;
-      font-weight: 600;
-      border: none;
-      border-radius: 10px;
-      background: linear-gradient(135deg, #2d7edb, var(--accent));
-      color: #fff;
-      cursor: pointer;
-      opacity: 1;
-    }
-    button:disabled {
-      opacity: .45;
-      cursor: not-allowed;
-    }
-    .err { color: #ff6b6b; font-size: 0.9rem; margin-top: .75rem; white-space: pre-wrap; }
-    .bar-row { margin: .45rem 0; }
-    .bar-label { display: flex; justify-content: space-between; font-size: .88rem; margin-bottom: .2rem; }
-    .bar-track {
-      height: 10px;
-      border-radius: 6px;
-      background: rgba(255,255,255,.08);
+      margin-top: 1.25rem;
+      padding: 0.75rem;
+      background: #000;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      min-height: 200px;
+      max-height: min(420px, 55vh);
       overflow: hidden;
     }
-    .bar-fill {
+
+    .preview-wrap.show { display: flex; align-items: center; justify-content: center; }
+
+    .preview-inner {
+      width: 100%;
       height: 100%;
+      min-height: 180px;
+      max-height: min(400px, 52vh);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .preview {
+      display: block;
+      max-width: 100%;
+      max-height: min(400px, 52vh);
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      object-position: center;
       border-radius: 6px;
-      background: linear-gradient(90deg, #2d7edb, var(--accent));
-      transition: width .35s ease;
     }
-    .pill {
-      display: inline-block;
-      padding: .2rem .55rem;
-      border-radius: 999px;
-      font-size: .78rem;
-      background: rgba(62,207,142,.15);
-      color: var(--ok);
-      margin-left: .35rem;
-    }
+
     .row2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0.75rem;
-      margin-top: 1rem;
+      gap: 0.85rem;
+      margin-top: 1.25rem;
     }
+
     label.field {
       display: block;
-      font-size: 0.82rem;
+      font-size: 0.78rem;
+      font-weight: 500;
       color: var(--muted);
-      margin-bottom: 0.25rem;
+      margin-bottom: 0.35rem;
     }
+
     input, select {
       width: 100%;
-      padding: 0.55rem 0.65rem;
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,.12);
-      background: rgba(0,0,0,.25);
+      padding: 0.65rem 0.75rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.35);
       color: var(--text);
+      font-family: inherit;
+      font-size: 0.95rem;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: rgba(56, 189, 248, 0.5);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+    }
+
+    button.primary {
+      margin-top: 1.25rem;
+      width: 100%;
+      padding: 0.9rem 1.25rem;
+      font-family: inherit;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #0ea5e9, var(--accent-2));
+      color: #fff;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.15s, box-shadow 0.2s;
+      box-shadow: 0 8px 24px rgba(14, 165, 233, 0.25);
+    }
+
+    button.primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 28px rgba(14, 165, 233, 0.35);
+    }
+
+    button.primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    button.primary.loading {
+      pointer-events: none;
+      position: relative;
+      color: transparent;
+    }
+
+    button.primary.loading::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      margin: auto;
+      width: 22px;
+      height: 22px;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .err {
+      color: var(--danger);
+      font-size: 0.88rem;
+      margin-top: 0.85rem;
+      padding: 0.65rem 0.85rem;
+      border-radius: 10px;
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid rgba(248, 113, 113, 0.2);
+      white-space: pre-wrap;
+      display: none;
+    }
+
+    .err.show { display: block; }
+
+    .result-empty {
+      text-align: center;
+      padding: 2.5rem 1rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .result-empty svg {
+      width: 40px;
+      height: 40px;
+      opacity: 0.35;
+      margin-bottom: 0.75rem;
+    }
+
+    .pred-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .pred-class {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--accent);
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      background: rgba(52, 211, 153, 0.15);
+      color: var(--ok);
+    }
+
+    .pill.warn {
+      background: rgba(251, 191, 36, 0.15);
+      color: var(--warn);
+    }
+
+    .metric {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+      margin: 0.5rem 0;
       font-size: 0.95rem;
     }
-    .disclaimer {
-      font-size: 0.78rem;
+
+    .metric strong {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.02em;
+    }
+
+    .section-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 1.25rem 0 0.65rem;
+    }
+
+    .section-title:first-of-type { margin-top: 0; }
+
+    .bar-row { margin: 0.5rem 0; }
+
+    .bar-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      margin-bottom: 0.3rem;
+      gap: 0.5rem;
+    }
+
+    .bar-label span:first-child {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .bar-label span:last-child {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .bar-track {
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #0ea5e9, var(--accent-2));
+      transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    .sev-highlight {
+      font-size: 1.1rem;
+      margin: 0.25rem 0 0.75rem;
+    }
+
+    .sev-highlight strong {
+      font-size: 1.4rem;
+      color: var(--accent);
+    }
+
+    .note {
+      font-size: 0.82rem;
       color: var(--muted);
       line-height: 1.55;
-      margin-top: 1.25rem;
+      margin-top: 1rem;
       padding-top: 1rem;
-      border-top: 1px solid rgba(255,255,255,.08);
+      border-top: 1px solid var(--border);
     }
+
+    details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 0.85rem;
+      user-select: none;
+    }
+
     pre.report {
       font-size: 0.78rem;
       color: var(--muted);
       white-space: pre-wrap;
       word-break: break-word;
-      margin: .75rem 0 0;
+      margin: 0.75rem 0 0;
+      padding: 0.85rem;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+
+    .gradcam-wrap {
+      display: none;
+      margin-top: 0.5rem;
+      padding: 0.75rem;
+      background: #000;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .gradcam-wrap.show { display: block; }
+
+    .gradcam-wrap img {
+      display: block;
+      width: 100%;
+      height: auto;
+      max-height: min(420px, 55vh);
+      object-fit: contain;
+      object-position: center;
+      margin: 0 auto;
+      border-radius: 8px;
+    }
+
+    .gradcam-caption {
+      margin: 0.65rem 0 0;
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .disclaimer {
+      margin-top: 2rem;
+      padding: 1rem 1.15rem;
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border);
+      font-size: 0.78rem;
+      color: var(--muted);
+      line-height: 1.6;
+      text-align: center;
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Pneumonia, viral vs bacterial &amp; severity</h1>
-    <p class="sub">Upload a chest X-ray (JPG / PNG). The model outputs pneumonia-related probability (when a Normal class exists), class probabilities, optional viral vs bacterial conditioning, and lung-involvement severity bins. Optional age / gender are sent to the API when you enable tabular fusion in training (<code>model.tabular_dim</code>). Research / education only — not for diagnosis.</p>
+  <div class="page">
+    <header>
+      <div class="logo" aria-hidden="true">🫁</div>
+      <h1>Chest X-ray Analysis</h1>
+      <p class="sub">
+        Upload a chest X-ray (JPG / PNG) for class probabilities, optional viral vs bacterial split, and severity estimate.
+        Optional age / gender are used when <code>model.tabular_dim &gt; 0</code>. Research / education only — not for diagnosis.
+      </p>
+    </header>
 
-    <div class="card">
-      <label class="drop" id="dropZone">
-        <input type="file" id="fileInput" accept="image/jpeg,image/png,image/jpg" />
-        <div id="dropText">Click to choose a file or drag and drop here</div>
-        <img id="preview" class="preview" alt="Preview" />
-      </label>
-      <div class="row2">
-        <div>
-          <label class="field" for="ageInput">Age (optional)</label>
-          <input type="number" id="ageInput" min="0" max="120" step="1" placeholder="e.g. 45" />
+    <div class="grid">
+      <div class="card">
+        <p class="card-title">Upload image</p>
+        <label class="drop" id="dropZone">
+          <input type="file" id="fileInput" accept="image/jpeg,image/png,image/jpg" />
+          <div class="drop-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+          </div>
+          <div id="dropText"><strong>Click or drag</strong> to upload JPG / PNG</div>
+        </label>
+        <div class="preview-wrap" id="previewWrap">
+          <div class="preview-inner">
+            <img id="preview" class="preview" alt="X-ray preview" />
+          </div>
         </div>
-        <div>
-          <label class="field" for="genderSelect">Gender (optional)</label>
-          <select id="genderSelect">
-            <option value="">Unknown</option>
-            <option value="M">Male</option>
-            <option value="F">Female</option>
-          </select>
+        <div class="row2">
+          <div>
+            <label class="field" for="ageInput">Age (optional)</label>
+            <input type="number" id="ageInput" min="0" max="120" step="1" placeholder="e.g. 45" />
+          </div>
+          <div>
+            <label class="field" for="genderSelect">Gender (optional)</label>
+            <select id="genderSelect">
+              <option value="">Unknown</option>
+              <option value="M">Male</option>
+              <option value="F">Female</option>
+            </select>
+          </div>
+        </div>
+        <button type="button" class="primary" id="btn" disabled>Run analysis</button>
+        <div class="err" id="err"></div>
+      </div>
+
+      <div class="card result-panel">
+        <p class="card-title">Results</p>
+        <div id="resultEmpty" class="result-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <path d="M8 12h8M12 8v8"/>
+          </svg>
+          <p>Upload an image and run analysis to see predictions here.</p>
+        </div>
+        <div id="resultCard" style="display: none;">
+          <div class="pred-header">
+            <span class="pred-class" id="predClass"></span>
+            <span class="pill" id="modelTag"></span>
+            <span class="pill warn" id="reviewTag" style="display: none;">Review</span>
+          </div>
+          <p id="confLine" class="metric"></p>
+          <p id="pneuLine" style="margin: 0; font-size: 0.9rem; color: var(--muted);"></p>
+
+          <p class="section-title">Class probabilities</p>
+          <div id="classBars"></div>
+
+          <p class="section-title">Viral vs bacterial (conditional)</p>
+          <div id="subtypeBars"></div>
+
+          <p class="section-title">Severity</p>
+          <div id="sevBlock"></div>
+          <p class="note" id="sevNote"></p>
+
+          <p class="section-title">Grad-CAM (model attention)</p>
+          <div id="gradCamWrap" class="gradcam-wrap">
+            <img id="gradCamImg" alt="Grad-CAM overlay" />
+            <p class="gradcam-caption" id="gradCamCaption"></p>
+          </div>
+
+          <details style="margin-top: 1rem;">
+            <summary>Full text report</summary>
+            <pre class="report" id="reportText"></pre>
+          </details>
         </div>
       </div>
-      <button type="button" id="btn" disabled>Run analysis</button>
-      <div class="err" id="err"></div>
     </div>
 
-    <div class="card" id="resultCard" style="display:none;">
-      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem;">
-        <strong>Prediction</strong>
-        <span id="predClass"></span>
-        <span class="pill" id="modelTag"></span>
-      </div>
-      <p id="pneuLine" style="margin:.25rem 0 .75rem;font-size:.95rem;color:var(--muted);"></p>
-      <h2 style="font-size:1rem;margin:0 0 .6rem;color:var(--muted);font-weight:500;">Class probabilities</h2>
-      <div id="classBars"></div>
-      <h2 style="font-size:1rem;margin:1rem 0 .4rem;color:var(--muted);font-weight:500;">Viral vs bacterial (conditional, if model has both)</h2>
-      <div id="subtypeBars"></div>
-      <h2 style="font-size:1rem;margin:1rem 0 .6rem;color:var(--muted);font-weight:500;">Severity</h2>
-      <div id="sevBlock"></div>
-      <p class="disclaimer" id="sevNote"></p>
-      <details style="margin-top:.75rem;">
-        <summary style="cursor:pointer;color:var(--muted);font-size:.85rem;">Full text report</summary>
-        <pre class="report" id="reportText"></pre>
-      </details>
-    </div>
+    <p class="disclaimer">
+      Assistive tool only. Outputs are not medical advice. Always consult a qualified clinician for diagnosis and treatment.
+    </p>
   </div>
 
   <script>
@@ -189,36 +567,61 @@
     const dropZone = document.getElementById("dropZone");
     const dropText = document.getElementById("dropText");
     const preview = document.getElementById("preview");
+    const previewWrap = document.getElementById("previewWrap");
     const btn = document.getElementById("btn");
     const err = document.getElementById("err");
     const resultCard = document.getElementById("resultCard");
+    const resultEmpty = document.getElementById("resultEmpty");
     const ageInput = document.getElementById("ageInput");
     const genderSelect = document.getElementById("genderSelect");
     let currentFile = null;
+    let previewUrl = null;
+
+    function showErr(msg) {
+      err.textContent = msg;
+      err.classList.toggle("show", !!msg);
+    }
 
     function setFile(file) {
       if (!file) return;
       if (!/^image\/(jpeg|png|jpg)$/i.test(file.type) && !/\.(jpe?g|png)$/i.test(file.name)) {
-        err.textContent = "Please use a JPG or PNG image.";
+        showErr("Please use a JPG or PNG image.");
         return;
       }
-      err.textContent = "";
+      showErr("");
       currentFile = file;
       btn.disabled = false;
-      dropText.textContent = file.name;
-      const url = URL.createObjectURL(file);
-      preview.src = url;
-      preview.classList.add("show");
+      dropText.innerHTML = `Selected: <strong>${file.name}</strong>`;
+
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(file);
+      preview.onload = () => {
+        preview.removeAttribute("width");
+        preview.removeAttribute("height");
+      };
+      preview.src = previewUrl;
+      previewWrap.classList.add("show");
+
       resultCard.style.display = "none";
+      resultEmpty.style.display = "block";
     }
 
     fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
-    dropZone.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("click", (e) => {
+      if (e.target === preview || e.target.closest(".preview-wrap")) return;
+      fileInput.click();
+    });
     ["dragenter", "dragover"].forEach((ev) => {
-      dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.add("dragover"); });
+      dropZone.addEventListener(ev, (e) => {
+        e.preventDefault();
+        dropZone.classList.add("dragover");
+      });
     });
     ["dragleave", "drop"].forEach((ev) => {
-      dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.remove("dragover"); });
+      dropZone.addEventListener(ev, (e) => {
+        e.preventDefault();
+        dropZone.classList.remove("dragover");
+      });
     });
     dropZone.addEventListener("drop", (e) => {
       const f = e.dataTransfer.files[0];
@@ -226,20 +629,23 @@
     });
 
     function barHtml(label, p) {
-      const pct = (p * 100).toFixed(1);
+      const pct = Math.min(100, Math.max(0, p * 100));
+      const pctStr = pct.toFixed(2);
       return `
         <div class="bar-row">
-          <div class="bar-label"><span>${label}</span><span>${pct}%</span></div>
-          <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+          <div class="bar-label"><span>${label}</span><span>${pctStr}%</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:${pctStr}%"></div></div>
         </div>`;
     }
 
     btn.addEventListener("click", async () => {
       if (!currentFile) return;
-      err.textContent = "";
+      showErr("");
       btn.disabled = true;
+      btn.classList.add("loading");
       btn.textContent = "Analyzing…";
       resultCard.style.display = "none";
+      resultEmpty.style.display = "block";
 
       const fd = new FormData();
       fd.append("file", currentFile, currentFile.name);
@@ -253,23 +659,36 @@
         const data = await res.json();
         if (!res.ok) {
           const d = data.detail;
-          err.textContent =
-            typeof d === "string" ? d : Array.isArray(d) ? d.map((x) => x.msg || x).join("\n") : JSON.stringify(data);
+          showErr(
+            typeof d === "string" ? d : Array.isArray(d) ? d.map((x) => x.msg || x).join("\n") : JSON.stringify(data)
+          );
           return;
         }
 
         document.getElementById("predClass").textContent = data.predicted_class || "—";
         document.getElementById("modelTag").textContent =
           data.model_type === "multi_task"
-            ? "Multi-task (class + severity)"
-            : "Classification only (severity is approximate)";
+            ? "Multi-task"
+            : "Classification only";
+
+        const reviewTag = document.getElementById("reviewTag");
+        const confLine = document.getElementById("confLine");
+        const confPct = ((data.confidence_score ?? data.confidence ?? 0) * 100).toFixed(2);
+        const thr = data.confidence_threshold != null ? (data.confidence_threshold * 100).toFixed(0) : "80";
+        confLine.innerHTML = `Confidence <strong>${confPct}%</strong> <span style="color:var(--muted);font-size:0.85rem">(threshold ${thr}%)</span>`;
+
+        if (data.needs_manual_review) {
+          reviewTag.style.display = "inline-block";
+          reviewTag.textContent = data.triage_message ? "Review" : "Review";
+          reviewTag.title = data.triage_message || "";
+        } else {
+          reviewTag.style.display = "none";
+        }
 
         const pneu = document.getElementById("pneuLine");
         if (typeof data.pneumonia_probability === "number") {
           pneu.textContent =
-            "Pneumonia-related probability (vs normal when available): " +
-            (data.pneumonia_probability * 100).toFixed(1) +
-            "%";
+            "Pneumonia-related probability: " + (data.pneumonia_probability * 100).toFixed(1) + "%";
         } else {
           pneu.textContent = "";
         }
@@ -288,7 +707,7 @@
             barHtml("P(viral | infection)", condV) + barHtml("P(bacterial | infection)", condB);
         } else {
           subtypeEl.innerHTML =
-            "<p style='margin:0;color:var(--muted);font-size:.88rem;'>No viral/bacterial split from this model (e.g. only two infection folders, or missing class names).</p>";
+            '<p style="margin:0;color:var(--muted);font-size:0.88rem;">Not available for this model configuration.</p>';
         }
 
         const sev = document.getElementById("sevBlock");
@@ -297,25 +716,41 @@
 
         if (data.severity_bin_probabilities && Object.keys(data.severity_bin_probabilities).length) {
           sev.innerHTML =
-            `<p style="margin:.3rem 0 .6rem;">Blended severity ~ <strong style="color:var(--accent);font-size:1.15rem;">${data.severity_estimated_percent ?? "—"}%</strong></p>` +
+            `<p class="sev-highlight">Blended severity ~ <strong>${data.severity_estimated_percent ?? "—"}%</strong></p>` +
             Object.entries(data.severity_bin_probabilities).map(([k, v]) => barHtml(k, v)).join("");
-          if (data.severity_interpretation) {
-            note.textContent = data.severity_interpretation;
-          }
+          if (data.severity_interpretation) note.textContent = data.severity_interpretation;
         } else {
           sev.innerHTML =
-            `<p style="margin:.3rem 0;">Estimated severity ~ <strong style="color:var(--accent);font-size:1.15rem;">${data.severity_estimated_percent ?? "—"}%</strong></p>`;
+            `<p class="sev-highlight">Estimated severity ~ <strong>${data.severity_estimated_percent ?? "—"}%</strong></p>`;
           note.textContent =
             data.severity_note ||
-            "With a classification-only checkpoint, severity is a rough estimate from non-normal probability.";
+            "With a classification-only checkpoint, severity is a rough estimate.";
         }
 
         document.getElementById("reportText").textContent = data.report || "";
+
+        const gradWrap = document.getElementById("gradCamWrap");
+        const gradImg = document.getElementById("gradCamImg");
+        const gradCap = document.getElementById("gradCamCaption");
+        if (data.grad_cam_image) {
+          gradImg.src = data.grad_cam_image;
+          const tgt = data.grad_cam_target_class || data.predicted_class || "predicted class";
+          gradCap.textContent =
+            `Heatmap highlights regions that influenced the model toward “${tgt}” (research visualization only).`;
+          gradWrap.classList.add("show");
+        } else {
+          gradImg.removeAttribute("src");
+          gradCap.textContent = "";
+          gradWrap.classList.remove("show");
+        }
+
+        resultEmpty.style.display = "none";
         resultCard.style.display = "block";
       } catch (e) {
-        err.textContent = String(e);
+        showErr(String(e));
       } finally {
         btn.disabled = false;
+        btn.classList.remove("loading");
         btn.textContent = "Run analysis";
       }
     });

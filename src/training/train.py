@@ -9,6 +9,7 @@ Features:
 - TensorBoard logging
 """
 
+import json
 import os
 import sys
 import numpy as np
@@ -273,13 +274,27 @@ class PneumoniaTrainer:
         else:
             logger.info(f"Starting training for {num_epochs} epochs...")
 
+        history_path = self.log_dir / "training_history.jsonl"
+
         for epoch in range(start_epoch, num_epochs):
             train_metrics = self.train_epoch(train_loader, epoch)
             logger.info(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {train_metrics['loss']:.4f}")
+            self._save_last_checkpoint(epoch, float(train_metrics["loss"]))
+            hist_row = {
+                "epoch": epoch + 1,
+                "train_loss": float(train_metrics["loss"]),
+            }
             
             if (epoch + 1) % self.config['evaluation']['eval_freq'] == 0:
                 val_metrics = self.validate(val_loader, epoch)
                 logger.info(f"Val Loss: {val_metrics['loss']:.4f}, Val F1: {val_metrics['binary_f1']:.4f}")
+                hist_row.update(
+                    {
+                        "val_loss": float(val_metrics["loss"]),
+                        "val_f1": float(val_metrics.get("f1", 0)),
+                        "val_accuracy": float(val_metrics.get("accuracy", 0)),
+                    }
+                )
                 
                 if val_metrics['binary_f1'] > self.best_val_f1:
                     self.best_val_f1 = val_metrics['binary_f1']
@@ -292,6 +307,11 @@ class PneumoniaTrainer:
                 if self.patience_counter >= patience:
                     logger.info(f"Early stopping at epoch {epoch + 1}")
                     break
+            else:
+                hist_row["val_skipped"] = True
+
+            with open(history_path, "a", encoding="utf-8") as hf:
+                hf.write(json.dumps(hist_row) + "\n")
             
             self.scheduler.step()
         
@@ -336,6 +356,21 @@ class PneumoniaTrainer:
         torch.save(checkpoint, checkpoint_path)
         logger.info(f"Checkpoint saved to {checkpoint_path}")
 
+    def _save_last_checkpoint(self, epoch: int, train_loss: float) -> None:
+        """Save latest epoch for resume (optimizer/scheduler state)."""
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": self.scheduler.state_dict(),
+            "best_val_f1": self.best_val_f1,
+            "train_loss": train_loss,
+        }
+        if self.use_mixed_precision:
+            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
+        path = self.checkpoint_dir / "last_epoch.pth"
+        torch.save(checkpoint, path)
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -357,6 +392,12 @@ def main():
         type=str,
         default=None,
         help='Path to .pth checkpoint (loads model/optimizer/scheduler; continues toward num_epochs)',
+    )
+    parser.add_argument(
+        '--start-epoch',
+        type=int,
+        default=None,
+        help='0-based epoch index to start from (overrides resume epoch+1). E.g. 7 = run epoch 8..num_epochs',
     )
     args = parser.parse_args()
 
@@ -415,6 +456,10 @@ def main():
             else:
                 raise FileNotFoundError(f"Checkpoint not found: {args.resume}")
         start_epoch = trainer.load_checkpoint(ckpt_path)
+
+    if args.start_epoch is not None:
+        start_epoch = int(args.start_epoch)
+        logger.info("Using --start-epoch %s (next logged epoch %s)", start_epoch, start_epoch + 1)
 
     trainer.train(train_loader, val_loader, start_epoch=start_epoch)
 

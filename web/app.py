@@ -28,12 +28,23 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 def _resolve_config_yaml() -> str:
-    """Prefer src/configs/config.yaml; fallback to repo root configs/config.yaml."""
-    for rel in ("src/configs/config.yaml", "configs/config.yaml"):
+    """Config path: env LUNG_XRAY_CONFIG, else chest deploy config, else default."""
+    env_cfg = os.environ.get("LUNG_XRAY_CONFIG")
+    if env_cfg:
+        p = Path(env_cfg)
+        if not p.is_absolute():
+            p = _REPO_ROOT / env_cfg
+        if p.is_file():
+            return str(p)
+    for rel in (
+        "src/configs/config_chest_xray.yaml",
+        "src/configs/config.yaml",
+        "configs/config.yaml",
+    ):
         p = _REPO_ROOT / rel
         if p.is_file():
             return str(p)
-    return str(_REPO_ROOT / "src/configs/config.yaml")
+    return str(_REPO_ROOT / "src/configs/config_chest_xray.yaml")
 
 
 from src.inference.predictor import PneumoniaPredictor
@@ -80,6 +91,9 @@ class PredictionResult(BaseModel):
     model_type: str
     predicted_class: str
     confidence: float
+    confidence_score: Optional[float] = None
+    confidence_threshold: Optional[float] = None
+    triage_message: Optional[str] = None
     class_probabilities: Dict[str, float]
     pneumonia_probability: Optional[float] = None
     subtype: Optional[Dict[str, float]] = None
@@ -87,7 +101,10 @@ class PredictionResult(BaseModel):
     severity_bin_probabilities: Optional[Dict[str, float]] = None
     severity_interpretation: Optional[str] = None
     severity_note: Optional[str] = None
+    needs_manual_review: Optional[bool] = None
     report: Optional[str] = None
+    grad_cam_image: Optional[str] = None
+    grad_cam_target_class: Optional[str] = None
     timestamp: str
     processing_time_ms: float
 
@@ -114,12 +131,21 @@ async def startup_event():
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info("Device: %s", device)
 
-        ckpt = os.environ.get("LUNG_XRAY_CHECKPOINT", "checkpoints/best_model.pth")
+        ckpt = os.environ.get(
+            "LUNG_XRAY_CHECKPOINT",
+            "checkpoints/chest_xray_stopped_epoch7/best_model.pth",
+        )
+        # LUNG_XRAY_NO_DATASET_NORM=1 forces ImageNet stats (overconfident on this model).
+        use_ds_norm = os.environ.get("LUNG_XRAY_NO_DATASET_NORM", "").lower() not in (
+            "1",
+            "true",
+            "yes",
+        )
         predictor = PneumoniaPredictor.from_config_file(
             config_path=_resolve_config_yaml(),
             checkpoint_path=ckpt,
             device=device,
-            use_dataset_normalization=True,
+            use_dataset_normalization=use_ds_norm,
         )
 
         model_loaded = True
@@ -192,15 +218,37 @@ async def predict(
             temp_image_path = tmp.name
 
         logger.info("Predict image: %s", file.filename)
-        prediction_result = predictor.predict(temp_image_path, age=age, gender=gender)
+        inf_cfg = predictor.config.get("inference") or {}
+        thr = float(inf_cfg.get("confidence_threshold", 0.8))
+        triage_msg = inf_cfg.get("triage_message", "Low confidence — manual review recommended.")
+
+        prediction_result = predictor.predict(
+            temp_image_path, age=age, gender=gender, confidence_threshold=thr
+        )
         prediction_en = PneumoniaPredictor.result_for_english_ui(prediction_result)
 
         processing_time = (time.time() - start_time) * 1000
         probs = prediction_en.get("class_probabilities") or {}
         pred_class = prediction_en.get("predicted_class") or ""
-        confidence = float(probs.get(pred_class, 0.0))
+        confidence = float(
+            prediction_en.get("confidence_score") or probs.get(pred_class, 0.0)
+        )
 
         report_text = PneumoniaPredictor.format_report(prediction_en, language="en")
+
+        grad_cam_image = None
+        grad_cam_target_class = None
+        try:
+            gc = predictor.grad_cam(
+                temp_image_path,
+                target_class_index=prediction_en.get("predicted_class_index"),
+                age=age,
+                gender=gender,
+            )
+            grad_cam_image = gc.get("grad_cam_image")
+            grad_cam_target_class = gc.get("target_class")
+        except Exception as gc_err:
+            logger.warning("Grad-CAM failed (prediction still returned): %s", gc_err)
 
         sub_raw = prediction_en.get("subtype") or {}
         subtype_out = {k: float(v) for k, v in sub_raw.items()} if sub_raw else None
@@ -209,6 +257,9 @@ async def predict(
             model_type=prediction_en.get("model_type", ""),
             predicted_class=pred_class,
             confidence=confidence,
+            confidence_score=confidence,
+            confidence_threshold=thr,
+            triage_message=triage_msg if prediction_en.get("needs_manual_review") else None,
             class_probabilities={k: float(v) for k, v in probs.items()},
             pneumonia_probability=prediction_en.get("pneumonia_probability"),
             subtype=subtype_out,
@@ -216,7 +267,10 @@ async def predict(
             severity_bin_probabilities=prediction_en.get("severity_bin_probabilities"),
             severity_interpretation=prediction_en.get("severity_interpretation"),
             severity_note=prediction_en.get("severity_note"),
+            needs_manual_review=prediction_en.get("needs_manual_review"),
             report=report_text,
+            grad_cam_image=grad_cam_image,
+            grad_cam_target_class=grad_cam_target_class,
             timestamp=datetime.now().isoformat(),
             processing_time_ms=processing_time,
         )

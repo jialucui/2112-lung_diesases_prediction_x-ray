@@ -1,0 +1,52 @@
+# Deployed model: Chest_xray_data1 (NORMAL vs PNEUMONIA), image-only (no tabular at train time)
+model:
+  model_type: multi_task
+  name: densenet121
+  num_classes: 2
+  severity_classes: 5
+  pretrained: true
+  tabular_dim: 0
+
+data:
+  data_dir: Chest_xray_data1/chest_xray
+  norm_stats: checkpoints/chest_xray_stopped_epoch7/dataset_norm_stats.json
+  csv_file: null
+  metadata_csv: null
+  tabular_extra_columns: []
+  image_size: 224
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  augment_train: true
+  num_workers: 4
+  seed: 42
+  severity_strategy: auto
+  synthetic_severity_by_class: null
+
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  weight_decay: 1.0e-5
+  num_epochs: 20
+  early_stopping_patience: 20
+  gradient_clip_max_norm: 1.0
+  mixed_precision: true
+  loss_weights:
+    classification: 0.6
+    severity_prediction: 0.4
+
+evaluation:
+  eval_freq: 5
+
+paths:
+  checkpoint_dir: checkpoints/chest_xray_stopped_epoch7/
+  log_dir: logs/
+  output_dir: outputs/chest_xray_report/
+
+inference:
+  class_display_names:
+    - NORMAL
+    - PNEUMONIA
+  severity_bin_centers: [10, 30, 50, 70, 90]
+  confidence_threshold: 0.8
+  triage_message: "Confidence below 0.8 — recommend manual radiologist review."

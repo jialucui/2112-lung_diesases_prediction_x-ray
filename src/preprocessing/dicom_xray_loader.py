@@ -8,10 +8,11 @@ Handles:
 - Optional severity labels (CSV, synthetic, or auto by class index)
 """
 
+import json
 import os
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -73,6 +74,111 @@ def get_image_statistics(image_dir: str) -> Tuple[np.ndarray, np.ndarray]:
     return mean, std
 
 
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+
+def load_xray_rgb(image_path: Union[str, Path], image_size: int = 224) -> np.ndarray:
+    """Load X-ray as RGB uint8 (H, W, 3) using the same path as XrayDataset."""
+    path = str(image_path)
+    if path.lower().endswith(".dcm"):
+        image = load_dicom(path)
+    else:
+        image = load_image(path)
+    if image.shape[:2] != (image_size, image_size):
+        image = cv2.resize(image, (image_size, image_size))
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+
+def load_norm_stats_file(stats_path: Union[str, Path]) -> Tuple[np.ndarray, np.ndarray]:
+    """Load cached mean/std from JSON (lists under keys mean, std)."""
+    with open(stats_path, encoding="utf-8") as f:
+        data = json.load(f)
+    mean = np.array(data["mean"], dtype=np.float32)
+    std = np.array(data["std"], dtype=np.float32)
+    return mean, std
+
+
+def save_norm_stats_file(
+    stats_path: Union[str, Path],
+    mean: np.ndarray,
+    std: np.ndarray,
+    *,
+    data_dir: Optional[str] = None,
+) -> None:
+    stats_path = Path(stats_path)
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    payload: Dict[str, Any] = {
+        "mean": mean.tolist(),
+        "std": std.tolist(),
+    }
+    if data_dir:
+        payload["data_dir"] = data_dir
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def resolve_norm_stats(
+    project_root: Path,
+    config: Dict[str, Any],
+    checkpoint_path: Optional[Path] = None,
+    *,
+    use_dataset_normalization: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Resolve normalization mean/std for inference.
+    Prefer cached JSON next to checkpoint or paths in config; avoid full-dataset scans when possible.
+    """
+    if not use_dataset_normalization:
+        return IMAGENET_MEAN.copy(), IMAGENET_STD.copy()
+
+    dcfg = config.get("data") or {}
+    candidates: List[Path] = []
+
+    norm_rel = dcfg.get("norm_stats")
+    if norm_rel:
+        candidates.append(project_root / norm_rel if not Path(norm_rel).is_absolute() else Path(norm_rel))
+
+    ck_dir = config.get("paths", {}).get("checkpoint_dir")
+    if ck_dir:
+        base = project_root / ck_dir if not Path(ck_dir).is_absolute() else Path(ck_dir)
+        candidates.append(base / "dataset_norm_stats.json")
+
+    if checkpoint_path is not None:
+        cp = Path(checkpoint_path)
+        if not cp.is_absolute():
+            cp = project_root / cp
+        candidates.append(cp.parent / "dataset_norm_stats.json")
+
+    seen = set()
+    for p in candidates:
+        key = str(p.resolve()) if p.exists() else str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        if p.is_file():
+            logger.info("Using cached normalization stats: %s", p)
+            return load_norm_stats_file(p)
+
+    data_dir = dcfg.get("data_dir")
+    if data_dir:
+        dp = project_root / data_dir if not Path(data_dir).is_absolute() else Path(data_dir)
+        if dp.is_dir():
+            mean, std = get_image_statistics(str(dp))
+            for p in candidates:
+                if p.parent.exists():
+                    try:
+                        save_norm_stats_file(p, mean, std, data_dir=str(data_dir))
+                        logger.info("Wrote normalization cache: %s", p)
+                        break
+                    except OSError:
+                        pass
+            return mean, std
+
+    logger.warning("No dataset norm stats; falling back to ImageNet mean/std.")
+    return IMAGENET_MEAN.copy(), IMAGENET_STD.copy()
+
+
 def _parse_gender_one_hot(raw: Any) -> Tuple[float, float]:
     """Return (male, female) one-hot; (0,0) if unknown."""
     if raw is None or (isinstance(raw, float) and np.isnan(raw)):
@@ -100,7 +206,7 @@ def _load_metadata_rows(
         return {}
     df = pd.read_csv(path)
     name_col = None
-    for c in ("image_name", "filename", "file", "path"):
+    for c in ("image_name", "filename", "file", "path", "Image Index"):
         if c in df.columns:
             name_col = c
             break
@@ -117,8 +223,16 @@ def _load_metadata_rows(
                 rec["age"] = float(row["age"])
             except (TypeError, ValueError):
                 rec["age"] = None
+        elif "Patient Age" in df.columns:
+            try:
+                rec["age"] = float(row["Patient Age"])
+            except (TypeError, ValueError):
+                rec["age"] = None
+                
         if "gender" in df.columns:
             rec["gender"] = row["gender"]
+        elif "Patient Gender" in df.columns:
+            rec["gender"] = row["Patient Gender"]
         if "severity" in df.columns:
             try:
                 rec["severity"] = int(row["severity"])
@@ -252,14 +366,7 @@ class XrayDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         image_path = self.image_paths[idx]
         label = self.labels[idx]
-        if image_path.lower().endswith(".dcm"):
-            image = load_dicom(image_path)
-        else:
-            image = load_image(image_path)
-        if image.shape[:2] != (self.image_size, self.image_size):
-            image = cv2.resize(image, (self.image_size, self.image_size))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = Image.fromarray(image)
+        image = Image.fromarray(load_xray_rgb(image_path, self.image_size))
         image = self.transform(image)
         sample: Dict[str, Any] = {
             "image": image,
